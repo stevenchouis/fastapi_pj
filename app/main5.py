@@ -1,11 +1,15 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.api import api_router  # 匯入剛才封裝好的總路由
+from app.core.config import settings
 
 from . import models  # 假設你把上面程式碼分開存
 from .database_async import get_db  # 假設你把上面程式碼分開存
@@ -28,6 +32,19 @@ pwd_context = CryptContext(schemes=["argon2", "bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 app = FastAPI()
+
+# 1. 設定 CORS (讓你的 Expo App 可以跨域連線)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 實務上 Render 部署後可限制為特定網域
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 2. 掛載 API 路由
+# 最終路徑會變成: /api/v1/login/access-token, /api/v1/users/push-tokens 等
+app.include_router(api_router, prefix=settings.API_V1_STR)
 
 # 使用Dict來存放USER資料庫, user是testuser,
 # 明文password是123456, 字典中放的Password則已加密, 此處用於Debug可取到Hashed Password的值, 才能到DB中建立 User資料
@@ -114,3 +131,15 @@ async def read_users_me(current_user: models.User = Depends(get_current_user)):
         "is_active": current_user.is_active,
         "msg": "這是一條來自 Supabase 的受保護資料",
     }
+
+
+# 3. 健康檢查路由 (給 Render 用的心跳點)
+@app.get("/health")
+async def health_check():
+    return {"status": "alive", "version": "1.0.0"}
+
+
+# if __name__ == "__main__":
+#     import uvicorn
+
+#     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

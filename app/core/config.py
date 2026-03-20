@@ -1,5 +1,5 @@
-import os
 from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 取得專案根目錄路徑 (假設 config.py 在 app/core/)
@@ -7,15 +7,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 base_dir = Path(__file__).resolve().parent.parent.parent
 env_file_path = base_dir / ".env"
 
+
 class Settings(BaseSettings):
+    API_V1_STR: str = "/api/v1"
     # 改為可選或提供預設值，避免啟動直接崩潰，或者保持原樣強制要求
-    DATABASE_URL: str 
-    
+    DATABASE_URL: str
+
     # 明確指定 env_file 的絕對路徑
     model_config = SettingsConfigDict(
-        env_file=env_file_path, 
+        env_file=env_file_path,
         env_file_encoding="utf-8",
-        extra="ignore" # 忽略多餘的環境變數
+        extra="ignore",  # 忽略多餘的環境變數
     )
 
     @property
@@ -26,5 +28,6 @@ class Settings(BaseSettings):
         elif url.startswith("postgresql://") and "+asyncpg" not in url:
             url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
         return url
+
 
 settings = Settings()

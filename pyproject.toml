@@ -21,7 +21,8 @@ dependencies = [
     "argon2-cffi (>=25.1.0,<26.0.0)",
     "psycopg2-binary (>=2.9.11,<3.0.0)",
     "alembic (>=1.18.4,<2.0.0)",
-    "exponent-server-sdk (>=2.2.0,<3.0.0)"
+    "exponent-server-sdk (>=2.2.0,<3.0.0)",
+    "httpx (>=0.28.1,<0.29.0)"
 ]
 
 
