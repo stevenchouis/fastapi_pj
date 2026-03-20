@@ -2,6 +2,7 @@
 name = "fastapi-pj"
 version = "0.1.0"
 description = ""
+package-mode = false
 authors = [
     {name = "周仁明",email = "stevenchouis@hotmail.com"}
 ]
