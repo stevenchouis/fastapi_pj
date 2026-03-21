@@ -4,14 +4,14 @@ from sqlalchemy.orm import relationship
 # python .（點）代表層級：在 Python 匯入系統中，
 # 一個點 . 就已經完整代表了「當前路徑下的套件（Current Package）」
 # 下例表示由models.py目前目錄下的database.py模組import Base Class
-from .database import Base
+from .database_async import Base
 
 
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
+    email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
 

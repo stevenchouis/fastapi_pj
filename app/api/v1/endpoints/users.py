@@ -7,7 +7,7 @@ from app import models, schemas
 
 # 假設你已有取得當前使用者的 Dependency
 from app.api.deps import get_current_user
-from app.database import get_db
+from app.database_async import get_db
 
 # 這裡不寫 prefix，因為會由上一層 api.py 統一分配
 router = APIRouter()

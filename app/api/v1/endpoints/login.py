@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import models, schemas
 from app.core import security  # 假設你這裡有 create_access_token 邏輯
 from app.core.config import settings
-from app.database import get_db
+from app.database_async import get_db
 
 router = APIRouter()
 

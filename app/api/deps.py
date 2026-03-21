@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.database import get_db
+from app.database_async import get_db
 from app.models import User
 
 # 這裡的 tokenUrl 必須對應到你實作「登入邏輯」的那個 API 路徑

@@ -6,7 +6,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
-from . import database, models  # 假設你把上面程式碼分開存
+from . import models  # 假設你把上面程式碼分開存
 
 # 設定參數
 SECRET_KEY = "mykey"  # 實務上請使用環境變數
@@ -60,15 +60,13 @@ async def login(
     db: Session = Depends(database.get_db),
 ):
     # 改為從資料庫查詢：SELECT * FROM users WHERE username = ...
-    user = (
-        db.query(models.User).filter(models.User.username == form_data.username).first()
-    )
+    user = db.query(models.User).filter(models.User.email == form_data.username).first()
 
     # 驗證邏輯不變，只是 user 現在是個物件而非字典
     if not user or not pwd_context.verify(form_data.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="帳號或密碼錯誤")
 
-    access_token = create_access_token(data={"sub": user.username})
+    access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
 

@@ -110,14 +110,14 @@ async def login(
     db: AsyncSession = Depends(get_db),  # 改用 AsyncSession 型別
 ):
     # 使用非同步查詢
-    query = select(models.User).filter(models.User.username == form_data.username)
+    query = select(models.User).filter(models.User.email == form_data.username)
     result = await db.execute(query)
     user = result.scalars().first()
 
     if not user or not pwd_context.verify(form_data.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="帳號或密碼錯誤")
 
-    access_token = create_access_token(data={"sub": user.username})
+    access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
 
