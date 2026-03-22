@@ -29,3 +29,27 @@ dependencies = [
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "ruff (>=0.15.7,<0.16.0)"
+]
+
+[tool.ruff]
+# 程式碼每行長度限制
+line-length = 88
+# 目標 Python 版本
+target-version = "py312"
+
+[tool.ruff.lint]
+# 啟動的檢查規則 (E: Pycodestyle, F: Pyflakes, I: isort 排序, UP: Pyupgrade)
+select = ["E", "F", "I", "UP", "B"]
+# 忽略特定的警告 (視需求調整)
+ignore = ["B008"]
+
+[tool.ruff.format]
+# 使用單引號還是雙引號 (建議用雙引號，這是 Black 的標準)
+quote-style = "double"
+# 自動排版 docstring
+docstring-code-format = true
+

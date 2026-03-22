@@ -1,31 +1,3 @@
-# from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-# from sqlalchemy.orm import declarative_base
-# from app.core.config import settings
-
-# # 建立非同步引擎
-# engine = create_async_engine(settings.async_database_url, echo=True)
-
-# # 建立非同步 Session 工廠
-# AsyncSessionLocal = async_sessionmaker(
-#     bind=engine,
-#     class_=AsyncSession,
-#     expire_on_commit=False
-# )
-
-# Base = declarative_base()
-
-# # Dependency: 提供非同步 DB Session
-# async def get_db():
-#     async with AsyncSessionLocal() as session:
-#         try:
-#             yield session
-#             await session.commit()
-#         except Exception:
-#             await session.rollback()
-#             raise
-#         finally:
-#             await session.close()
-
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -35,15 +7,6 @@ SQLALCHEMY_DATABASE_URL = "postgresql+asyncpg://postgres.cvotzsjolzsvevoefucb:VW
 
 
 # 2. 建立非同步引擎
-# engine = create_async_engine(SQLALCHEMY_DATABASE_URL, echo=True)
-# engine = create_async_engine(
-#     SQLALCHEMY_DATABASE_URL,
-#     echo=True,
-#     pool_pre_ping=True,  # 每次使用連線前先檢查是否還活著
-#     pool_size=5,  # 限制本地連線數
-#     max_overflow=10,
-# )
-# 2. 在建立引擎時，透過 connect_args 傳入整數 0
 engine = create_async_engine(
     SQLALCHEMY_DATABASE_URL,
     echo=True,

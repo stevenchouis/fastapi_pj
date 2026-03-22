@@ -1,19 +1,8 @@
-from datetime import timedelta
-
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from passlib.context import CryptContext
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.api import api_router  # 匯入剛才封裝好的總路由
-from app.core import security  # 假設你這裡有 create_access_token 邏輯
 from app.core.config import settings
-
-from . import models  # 假設你把上面程式碼分開存
-from .api.deps import get_current_user  # 假設你把上面程式碼分開存
-from .database_async import get_db  # 假設你把上面程式碼分開存
 
 # 設定參數
 # SECRET_KEY = "mykey"  # 實務上請使用環境變數
@@ -23,14 +12,14 @@ from .database_async import get_db  # 假設你把上面程式碼分開存
 # 註冊後可使用pwd_context.hash("password123")：將明文密碼轉為雜湊字串, 再存入資料庫。
 # 後續可使用pwd_context.verify("password123", hashed_password)：驗證使用者輸入的密碼是否正確。
 # 將 argon2 放在第一順位
-pwd_context = CryptContext(schemes=["argon2", "bcrypt"], deprecated="auto")
+# pwd_context = CryptContext(schemes=["argon2", "bcrypt"], deprecated="auto")
 # pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # OAuth2PasswordBearer：這是一個「依賴項（Dependency）」，
 # 它告訴 FastAPI：當前端發送請求時，去 HTTP Header 的 Authorization 欄位找 Bearer <Token>。
 # tokenUrl="token"：這指定了取得 Token 的 API 路徑。
 # 當你在 Swagger UI (/docs) 點擊右上角的 Authorize 按鈕時，
 # 它會知道要往 your-api-url/token 發送帳號密碼來交換 Token。
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+# oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 app = FastAPI()
 
@@ -49,9 +38,9 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 # 使用Dict來存放USER資料庫, user是testuser,
 # 明文password是123456, 字典中放的Password則已加密, 此處用於Debug可取到Hashed Password的值, 才能到DB中建立 User資料
-users_db = {
-    "testuser": {"username": "testuser", "password": pwd_context.hash("123456")}
-}
+# users_db = {
+#     "testuser": {"username": "testuser", "password": pwd_context.hash("123456")}
+# }
 
 
 # 工具函數：產生 JWT, 供login成功後,Call它產生JWT token回傳
@@ -107,41 +96,41 @@ users_db = {
 # 它是類別Class, 具有__call__() method會自動去取出Request Body 中尋找
 # Content-Type: application/x-www-form-urlencoded 的資料，
 # 並強制要求前端必須傳送 username 和 password 欄位回傳字典型態資料值給form_data參數
-@app.post("/token")
-async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: AsyncSession = Depends(get_db),  # 改用 AsyncSession 型別
-):
-    # 1. 使用 where 並確保 models 匯入正確
-    statement = select(models.User).where(models.User.email == form_data.username)
+# @app.post("/token")
+# async def login(
+#     form_data: OAuth2PasswordRequestForm = Depends(),
+#     db: AsyncSession = Depends(get_db),  # 改用 AsyncSession 型別
+# ):
+#     # 1. 使用 where 並確保 models 匯入正確
+#     statement = select(models.User).where(models.User.email == form_data.username)
 
-    # 2. 執行並捕捉結果
-    result = await db.execute(statement)
+#     # 2. 執行並捕捉結果
+#     result = await db.execute(statement)
 
-    # 3. 使用 scalar_one_or_none 防止多筆或無資料時報錯
-    # user = result.scalar_one_or_none()
-    user = result.scalars().first()
+#     # 3. 使用 scalar_one_or_none 防止多筆或無資料時報錯
+#     # user = result.scalar_one_or_none()
+#     user = result.scalars().first()
 
-    if not user or not pwd_context.verify(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="帳號或密碼錯誤")
-    # 產生一個代表 30 分鐘長度的 timedelta 物件
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = security.create_access_token(
-        subject=user.email, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+#     if not user or not pwd_context.verify(form_data.password, user.hashed_password):
+#         raise HTTPException(status_code=400, detail="帳號或密碼錯誤")
+#     # 產生一個代表 30 分鐘長度的 timedelta 物件
+#     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+#     access_token = security.create_access_token(
+#         subject=user.email, expires_delta=access_token_expires
+#     )
+#     return {"access_token": access_token, "token_type": "bearer"}
 
 
 # 採用JWT Token驗證的受保護路由：需要在HTTP Header中帶上有效的 Bearer <Token> 才能訪問
-@app.get("/users/me")
-async def read_users_me(current_user: models.User = Depends(get_current_user)):
-    # 這裡的 current_user 已經是從資料庫查出來的 ORM 物件了
-    return {
-        "username": current_user.email,
-        "id": current_user.id,
-        "is_active": current_user.is_active,
-        "msg": "這是一條來自 Supabase 的受保護資料",
-    }
+# @app.get("/users/me")
+# async def read_users_me(current_user: models.User = Depends(get_current_user)):
+#     # 這裡的 current_user 已經是從資料庫查出來的 ORM 物件了
+#     return {
+#         "username": current_user.email,
+#         "id": current_user.id,
+#         "is_active": current_user.is_active,
+#         "msg": "這是一條來自 Supabase 的受保護資料",
+#     }
 
 
 # 3. 健康檢查路由 (給 Render 用的心跳點)
@@ -150,7 +139,10 @@ async def health_check():
     return {"status": "alive", "version": "1.0.0"}
 
 
-# if __name__ == "__main__":
-#     import uvicorn
+# 加了這一行執行有二種方法:
+# 1. 在終端機輸入: uvicorn app.main5:app --reload
+# 2. 直接執行這個 python -m app.main5 檔案, 它會呼叫 uvicorn.run() 啟動服務器
+if __name__ == "__main__":
+    import uvicorn
 
-#     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.main5:app", host="0.0.0.0", port=8000, reload=True)

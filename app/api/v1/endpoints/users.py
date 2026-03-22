@@ -18,6 +18,18 @@ async def get_users():
     return [{"id": 1, "username": "admin"}, {"id": 2, "username": "guest"}]
 
 
+# 採用JWT Token驗證的受保護路由：需要在HTTP Header中帶上有效的 Bearer <Token> 才能訪問
+@router.get("/me")
+async def read_users_me(current_user: models.User = Depends(get_current_user)):
+    # 這裡的 current_user 已經是從資料庫查出來的 ORM 物件了
+    return {
+        "username": current_user.email,
+        "id": current_user.id,
+        "is_active": current_user.is_active,
+        "msg": "這是一條來自 Supabase 的受保護資料",
+    }
+
+
 @router.get("/{user_id}")
 async def get_user_by_id(user_id: int):
     return {"id": user_id, "username": f"user_{user_id}"}
