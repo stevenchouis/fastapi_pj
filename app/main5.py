@@ -1,23 +1,24 @@
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.api import api_router  # 匯入剛才封裝好的總路由
+from app.core import security  # 假設你這裡有 create_access_token 邏輯
 from app.core.config import settings
 
 from . import models  # 假設你把上面程式碼分開存
+from .api.deps import get_current_user  # 假設你把上面程式碼分開存
 from .database_async import get_db  # 假設你把上面程式碼分開存
 
 # 設定參數
-SECRET_KEY = "mykey"  # 實務上請使用環境變數
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+# SECRET_KEY = "mykey"  # 實務上請使用環境變數
+# ALGORITHM = "HS256"
+# ACCESS_TOKEN_EXPIRE_MINUTES = 30
 # 使用Passlib 函式庫, 建立一個加密Object(指定使用的Schema, 以及自動deprecated)
 # 註冊後可使用pwd_context.hash("password123")：將明文密碼轉為雜湊字串, 再存入資料庫。
 # 後續可使用pwd_context.verify("password123", hashed_password)：驗證使用者輸入的密碼是否正確。
@@ -55,48 +56,50 @@ users_db = {
 
 # 工具函數：產生 JWT, 供login成功後,Call它產生JWT token回傳
 # 傳入JWT payload 中的字典資料
-def create_access_token(data: dict):
-    # Python字典copy method建立另一字典變數
-    to_encode = data.copy()
-    # 舊的寫法（不推薦）
-    # expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    # 新的推薦寫法：使用 timezone-aware 物件
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    # python 字典update method, 更新特定Key的值,不存在則加入
-    to_encode.update({"exp": expire})
-    # 使用encode method將字典變數, 依SECRET KEY加密後回傳
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+# def create_access_token(data: dict):
+#     # Python字典copy method建立另一字典變數
+#     to_encode = data.copy()
+#     # 舊的寫法（不推薦）
+#     # expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+#     # 新的推薦寫法：使用 timezone-aware 物件
+#     expire = datetime.now(timezone.utc) + timedelta(
+#         minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+#     )
+#     # python 字典update method, 更新特定Key的值,不存在則加入
+#     to_encode.update({"exp": expire})
+#     # 使用encode method將字典變數, 依SECRET KEY加密後回傳
+#     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 # 這是受保護路由的核心邏輯
 # 使用二個Depends()依賴項: "驗證去取得傳入的JWTToken","取得連線的資料庫Session",傳入Function參數中
-async def get_current_user(
-    token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)
-):
-    credentials_exception = HTTPException(
-        status_code=401,
-        detail="無法驗證憑證",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        # 解碼 JWT Token, 取得 payload 中的 username 資料, 如果沒有則丟出驗證失敗的例外
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+# async def get_current_user(
+#     token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)
+# ):
+#     credentials_exception = HTTPException(
+#         status_code=401,
+#         detail="無法驗證憑證",
+#         headers={"WWW-Authenticate": "Bearer"},
+#     )
+#     try:
+#         # 解碼 JWT Token, 取得 payload 中的 username 資料, 如果沒有則丟出驗證失敗的例外
+#         payload = jwt.decode(
+#             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+#         )
+#         username: str = payload.get("sub")
+#         if username is None:
+#             raise credentials_exception
+#     except JWTError:
+#         raise credentials_exception
 
-    # 非同步查詢資料庫：驗證從 JWT Token 取得的 username 是否存在於資料庫中, 如果不存在則丟出驗證失敗的例外
-    result = await db.execute(
-        select(models.User).filter(models.User.username == username)
-    )
-    user = result.scalars().first()
+#     # 非同步查詢資料庫：驗證從 JWT Token 取得的 username 是否存在於資料庫中, 如果不存在則丟出驗證失敗的例外
+#     result = await db.execute(select(models.User).filter(models.User.email == username))
+#     user = result.scalars().first()
 
-    if user is None:
-        raise credentials_exception
-    # 如果驗證成功，回傳 user 物件給呼叫它的路由函數使用
-    return user
+#     if user is None:
+#         raise credentials_exception
+#     # 如果驗證成功，回傳 user 物件給呼叫它的路由函數使用
+#     return user
 
 
 # 1. 登入路由：取得 Token
@@ -109,15 +112,23 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),  # 改用 AsyncSession 型別
 ):
-    # 使用非同步查詢
-    query = select(models.User).filter(models.User.email == form_data.username)
-    result = await db.execute(query)
+    # 1. 使用 where 並確保 models 匯入正確
+    statement = select(models.User).where(models.User.email == form_data.username)
+
+    # 2. 執行並捕捉結果
+    result = await db.execute(statement)
+
+    # 3. 使用 scalar_one_or_none 防止多筆或無資料時報錯
+    # user = result.scalar_one_or_none()
     user = result.scalars().first()
 
     if not user or not pwd_context.verify(form_data.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="帳號或密碼錯誤")
-
-    access_token = create_access_token(data={"sub": user.email})
+    # 產生一個代表 30 分鐘長度的 timedelta 物件
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = security.create_access_token(
+        subject=user.email, expires_delta=access_token_expires
+    )
     return {"access_token": access_token, "token_type": "bearer"}
 
 
@@ -126,7 +137,7 @@ async def login(
 async def read_users_me(current_user: models.User = Depends(get_current_user)):
     # 這裡的 current_user 已經是從資料庫查出來的 ORM 物件了
     return {
-        "username": current_user.username,
+        "username": current_user.email,
         "id": current_user.id,
         "is_active": current_user.is_active,
         "msg": "這是一條來自 Supabase 的受保護資料",

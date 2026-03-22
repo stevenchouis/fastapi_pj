@@ -4,9 +4,11 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from sqlalchemy import select  # 確保在檔案頂部匯入
 from sqlalchemy.orm import Session
 
 from . import models  # 假設你把上面程式碼分開存
+from .database_async import get_db  # 假設你把上面程式碼分開存
 
 # 設定參數
 SECRET_KEY = "mykey"  # 實務上請使用環境變數
@@ -57,10 +59,14 @@ def create_access_token(data: dict):
 @app.post("/token")
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(database.get_db),
+    db: Session = Depends(get_db),
 ):
-    # 改為從資料庫查詢：SELECT * FROM users WHERE username = ...
-    user = db.query(models.User).filter(models.User.email == form_data.username).first()
+    # 1. 使用 select 建立查詢
+    statement = select(models.User).filter(models.User.email == form_data.username)
+
+    # 2. 使用 await 執行，並取得第一個結果
+    result = await db.execute(statement)
+    user = result.scalars().first()
 
     # 驗證邏輯不變，只是 user 現在是個物件而非字典
     if not user or not pwd_context.verify(form_data.password, user.hashed_password):
@@ -72,7 +78,7 @@ async def login(
 
 @app.get("/users/me")
 async def read_users_me(
-    token: str = Depends(oauth2_scheme), db: Session = Depends(database.get_db)
+    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
 ):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])

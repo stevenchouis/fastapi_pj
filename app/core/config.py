@@ -10,6 +10,9 @@ env_file_path = base_dir / ".env"
 
 class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
+    SECRET_KEY: str  # 不給預設值，強迫從 .env 讀取
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     # 改為可選或提供預設值，避免啟動直接崩潰，或者保持原樣強制要求
     DATABASE_URL: str
 
