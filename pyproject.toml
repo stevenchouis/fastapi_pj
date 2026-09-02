@@ -22,7 +22,10 @@ dependencies = [
     "psycopg2-binary (>=2.9.11,<3.0.0)",
     "alembic (>=1.18.4,<2.0.0)",
     "exponent-server-sdk (>=2.2.0,<3.0.0)",
-    "httpx (>=0.28.1,<0.29.0)"
+    "httpx (>=0.28.1,<0.29.0)",
+    "apscheduler (>=3.11.2,<4.0.0)",
+    "google-auth (>=2.57.0,<3.0.0)",
+    "resend (>=2.42.0,<3.0.0)"
 ]
 
 

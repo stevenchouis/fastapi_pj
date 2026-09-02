@@ -1,79 +1,55 @@
+import asyncio
 import logging
-from typing import List, Optional
+from typing import Optional
 
-import httpx
-from exponent_server_sdk import (
-    DeviceNotRegisteredError,
-    PushClient,
-    PushMessage,
-)
-from sqlalchemy import delete
-from sqlalchemy.ext.asyncio import AsyncSession
+from exponent_server_sdk import PushClient, PushMessage
+from sqlalchemy import select
 
 from .. import models
 
 logger = logging.getLogger(__name__)
-
-
-async def cleanup_invalid_tokens(db: AsyncSession, tokens: List[str]):
-    """當 Expo 回報 Token 失效時，從資料庫徹底移除"""
-    if tokens:
-        await db.execute(
-            delete(models.PushToken).where(models.PushToken.token.in_(tokens))
-        )
-        await db.commit()
-        logger.info(f"已清理無效 Tokens: {len(tokens)} 筆")
+push_client = PushClient()
 
 
 async def send_user_push_notifications(
-    db_factory,  # 傳入 sessionmaker 或是 session
+    db_factory,
     user_id: int,
     title: str,
     body: str,
     data: Optional[dict] = None,
 ):
-    """主邏輯：撈取使用者所有裝置並發送"""
-    # 建立新的 Session (因為是在 Background Task 執行)
-    async with db_factory() as db:
-        # 1. 撈取該使用者的所有 Token
-        from sqlalchemy import select
+    token_list = []
 
+    # 第一步：只負責撈資料，撈完立刻關閉連線釋放資源，避免 ROLLBACK
+    async with db_factory() as db:
+        # 1. 儲存到歷史紀錄表
+        new_log = models.NotificationLog(
+            user_id=user_id, title=title, body=body, data=data
+        )
+        db.add(new_log)
         result = await db.execute(
             select(models.PushToken).where(models.PushToken.user_id == user_id)
         )
         db_tokens = result.scalars().all()
-
-        if not db_tokens:
-            return
-
         token_list = [t.token for t in db_tokens]
-        invalid_tokens = []
+        # 即使只是查詢，也顯式提交一次來結束 Transaction
+        await db.commit()
+    if not token_list:
+        logger.info(f"使用者 {user_id} 無可用 Token")
+        return
 
-        # 2. 使用 httpx 非同步發送
-        async with httpx.AsyncClient() as client:
-            push_client = PushClient(session=client)
-
-            for token in token_list:
-                try:
-                    # 封裝訊息
-                    msg = PushMessage(
-                        to=token,
-                        title=title,
-                        body=body,
-                        data=data or {},
-                        sound="default",
-                    )
-                    # 發送
-                    response = await push_client.publish_async(msg)
-                    # 檢查回應內容 (Expo 有時會在此處回報失效)
-                    response.validate_response()
-
-                except DeviceNotRegisteredError:
-                    # 發現無效 Token，加入待清理清單
-                    invalid_tokens.append(token)
-                except Exception as e:
-                    logger.error(f"發送推播至 {token} 失敗: {e}")
-
-        # 3. 清理無效 Token
-        if invalid_tokens:
-            await cleanup_invalid_tokens(db, invalid_tokens)
+    # 第二步：在資料庫連線關閉後，才執行耗時的網路推播
+    loop = asyncio.get_event_loop()
+    for token in token_list:
+        msg = PushMessage(
+            to=token, title=title, body=body, data=data or {}, sound="default"
+        )
+        try:
+            # 使用 executor 執行同步發送
+            response = await loop.run_in_executor(None, push_client.publish, msg)
+            if response.status == "ok":
+                logger.info("✅ iPhone 推播發送成功")
+            else:
+                logger.error(f"❌ Expo 錯誤: {response.message}")
+        except Exception as e:
+            logger.error(f"🔥 發送異常: {e}")

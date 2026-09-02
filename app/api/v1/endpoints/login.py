@@ -1,14 +1,20 @@
-from datetime import timedelta
+import hashlib
+import secrets
+from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import models
+from app import models, schemas
 from app.core import security  # 假設你這裡有 create_access_token 邏輯
 from app.core.config import settings
 from app.database_async import get_db
+from app.services.email_service import send_magic_link_email
 
 # from app.main4 import create_access_token
 
@@ -35,6 +41,10 @@ async def login_access_token(
     ):
         raise HTTPException(status_code=400, detail="帳號或密碼錯誤")
 
+    # 3. 檢查帳號是否啟用
+    if not user.is_active:
+        raise HTTPException(status_code=400, detail="帳號已被停用")
+
     # 產生一個代表 30 分鐘長度的 timedelta 物件
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = security.create_access_token(
@@ -43,4 +53,195 @@ async def login_access_token(
         expires_delta=access_token_expires,
     )
     # access_token = security.create_access_token(data={"sub": user.email})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.post("/login/google")
+async def login_google(
+    payload: schemas.GoogleLoginRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    # 1. 驗證 Google id_token 的簽章、有效期限與 audience（離線驗證，不額外發 HTTP request）
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            payload.id_token, google_requests.Request(), settings.GOOGLE_CLIENT_ID
+        )
+    except ValueError as e:
+        print(f"DEBUG: Google id_token 驗證失敗: {e}")
+        raise HTTPException(status_code=400, detail="Google 登入驗證失敗")
+
+    # 只信任 Google 已驗證過的 Email，避免自動綁定時發生帳號接管風險
+    if not idinfo.get("email_verified"):
+        raise HTTPException(status_code=400, detail="Google 帳號的 Email 尚未驗證")
+
+    google_id = idinfo["sub"]
+    email = idinfo["email"]
+
+    # 2. 先用 google_id 找出是否已經綁定過的帳號
+    statement = select(models.User).where(models.User.google_id == google_id)
+    result = await db.execute(statement)
+    user = result.scalars().first()
+
+    if not user:
+        # 3. 尚未綁定過，改用 email 查找既有帳號（原本可能是用密碼註冊）
+        statement = select(models.User).where(models.User.email == email)
+        result = await db.execute(statement)
+        user = result.scalars().first()
+
+        try:
+            if user:
+                # 既有帳號自動補綁定 google_id，視為同一使用者
+                user.google_id = google_id
+                user.auth_provider = "both"
+            else:
+                # 全新使用者，純 Google 帳號沒有密碼
+                user = models.User(
+                    email=email,
+                    google_id=google_id,
+                    hashed_password=None,
+                    auth_provider="google",
+                    is_active=True,
+                )
+                db.add(user)
+            await db.commit()
+            await db.refresh(user)
+        except Exception as e:
+            await db.rollback()
+            print(f"DEBUG: Google 登入建立/綁定使用者失敗: {e}")
+            raise HTTPException(status_code=500, detail="Google 登入處理失敗")
+
+    if not user.is_active:
+        raise HTTPException(status_code=400, detail="帳號已被停用")
+
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = security.create_access_token(
+        subject=str(user.id),
+        expires_delta=access_token_expires,
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.post("/login/magic-link/request", status_code=status.HTTP_204_NO_CONTENT)
+async def request_magic_link(
+    payload: schemas.MagicLinkRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    email = payload.email.lower()
+
+    # 60 秒內若已寄過信，就不再重寄，避免被拿來對別人的信箱灌信騷擾
+    cooldown_since = datetime.now(UTC) - timedelta(seconds=60)
+    statement = (
+        select(models.MagicLinkToken)
+        .where(models.MagicLinkToken.email == email)
+        .where(models.MagicLinkToken.created_at > cooldown_since)
+        .order_by(models.MagicLinkToken.created_at.desc())
+    )
+    result = await db.execute(statement)
+    recent_token = result.scalars().first()
+
+    if not recent_token:
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        expires_at = datetime.now(UTC) + timedelta(minutes=15)
+
+        try:
+            db.add(
+                models.MagicLinkToken(
+                    email=email, token_hash=token_hash, expires_at=expires_at
+                )
+            )
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            print(f"DEBUG: Magic Link token 建立失敗: {e}")
+            # 失敗也不讓前端知道細節，一律回傳相同結果，避免帳號枚舉／內部錯誤外洩
+            return
+
+        link = (
+            f"{settings.BASE_URL}{settings.API_V1_STR}"
+            f"/login/magic-link/redirect?token={raw_token}"
+        )
+        background_tasks.add_task(send_magic_link_email, email, link)
+
+    # 無論 email 是否存在、是否觸發 cooldown，一律回傳相同結果，避免帳號枚舉
+    return
+
+
+@router.get("/login/magic-link/redirect", response_class=HTMLResponse)
+async def magic_link_redirect(token: str):
+    """信件連結的落地頁。這裡只單純轉跳，不會消耗 token —— 因為部分信箱服務
+    （如 Outlook/Gmail 的安全掃描）會自動預先擷取信件中的連結，若在這一步就把
+    token 標記為已使用，使用者自己點擊時 token 早就被機器人用掉了。
+    真正消耗 token 的動作在 /login/magic-link/verify（由 App 呼叫）。"""
+    deep_link = f"mynotification://magic-login?token={token}"
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="refresh" content="0;url={deep_link}" />
+<script>window.location.replace("{deep_link}");</script>
+</head>
+<body>
+<p>正在開啟 App…如果沒有自動跳轉，請點擊<a href="{deep_link}">這裡</a>。</p>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content)
+
+
+@router.post("/login/magic-link/verify")
+async def verify_magic_link(
+    payload: schemas.MagicLinkVerify,
+    db: AsyncSession = Depends(get_db),
+):
+    token_hash = hashlib.sha256(payload.token.encode()).hexdigest()
+    now = datetime.now(UTC)
+
+    # 用一次 UPDATE ... WHERE used_at IS NULL 原子性地標記為已使用，
+    # 避免同一個 token 被同時打兩次 verify 時重複發放登入
+    statement = (
+        update(models.MagicLinkToken)
+        .where(models.MagicLinkToken.token_hash == token_hash)
+        .where(models.MagicLinkToken.used_at.is_(None))
+        .where(models.MagicLinkToken.expires_at > now)
+        .values(used_at=now)
+        .returning(models.MagicLinkToken.email)
+    )
+    result = await db.execute(statement)
+    row = result.first()
+    if row is None:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="登入連結無效或已過期")
+
+    email = row[0]
+
+    statement = select(models.User).where(models.User.email == email)
+    result = await db.execute(statement)
+    user = result.scalars().first()
+
+    try:
+        if not user:
+            # 全新使用者，純 Magic Link 帳號沒有密碼
+            user = models.User(
+                email=email,
+                hashed_password=None,
+                auth_provider="magic_link",
+                is_active=True,
+            )
+            db.add(user)
+        await db.commit()
+        await db.refresh(user)
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: Magic Link 登入建立使用者失敗: {e}")
+        raise HTTPException(status_code=500, detail="登入處理失敗")
+
+    if not user.is_active:
+        raise HTTPException(status_code=400, detail="帳號已被停用")
+
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = security.create_access_token(
+        subject=str(user.id),
+        expires_delta=access_token_expires,
+    )
     return {"access_token": access_token, "token_type": "bearer"}

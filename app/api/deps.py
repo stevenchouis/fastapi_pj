@@ -1,5 +1,7 @@
 # app/api/deps.py
-from fastapi import Depends, HTTPException
+import secrets
+
+from fastapi import Depends, Header, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy import select
@@ -37,3 +39,9 @@ async def get_current_user(
         raise HTTPException(status_code=404, detail="找不到使用者")
 
     return user
+
+
+async def verify_admin_key(x_admin_key: str = Header(...)) -> None:
+    """管理者專用端點的簡易保護：比對固定密鑰。用 constant-time 比較避免 timing attack。"""
+    if not secrets.compare_digest(x_admin_key, settings.ADMIN_API_KEY):
+        raise HTTPException(status_code=401, detail="Admin Key 無效")

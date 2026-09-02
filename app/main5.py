@@ -1,8 +1,11 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.api import api_router  # 匯入剛才封裝好的總路由
 from app.core.config import settings
+from app.services.scheduler_service import scheduler, start_scheduler
 
 # 設定參數
 # SECRET_KEY = "mykey"  # 實務上請使用環境變數
@@ -21,7 +24,21 @@ from app.core.config import settings
 # 它會知道要往 your-api-url/token 發送帳號密碼來交換 Token。
 # oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 1. 啟動時執行：開啟排程器
+    start_scheduler()
+    print("APScheduler 服務已透過 Lifespan 啟動...")
+
+    yield
+
+    # 2. 關閉時執行：安全關閉排程器
+    scheduler.shutdown()
+    print("APScheduler 服務已關閉")
+
+
+app = FastAPI(lifespan=lifespan)
 
 # 1. 設定 CORS (讓你的 Expo App 可以跨域連線)
 app.add_middleware(
@@ -31,6 +48,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # 2. 掛載 API 路由
 # 最終路徑會變成: /api/v1/login/access-token, /api/v1/users/push-tokens 等
@@ -136,12 +154,21 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 # 3. 健康檢查路由 (給 Render 用的心跳點)
 @app.get("/health")
 async def health_check():
-    return {"status": "alive", "version": "1.0.0"}
+    return {"status": "alive", "version": "1.0.1"}
 
 
 # 加了這一行執行有二種方法:
 # 1. 在終端機輸入: uvicorn app.main5:app --reload
 # 2. 直接執行這個 python -m app.main5 檔案, 它會呼叫 uvicorn.run() 啟動服務器
+# 不加任何參數時，Uvicorn 預設會使用 --host 127.0.0.1。
+# 127.0.0.1 (Localhost)：這代表「只允許這台電腦自己連自己」。你的手機與電腦雖然在同一個 Wi-Fi 下，
+# 但對電腦來說，手機是一個「外部設備」，因此請求會被拒絕。
+# 3. python -m uvicorn app.main5:app --host 0.0.0.0 --port 8000 --reload
+# 0.0.0.0：這代表「監聽這台電腦所有網路介面的請求」。不論是來自電腦自己、同 Wi-Fi 下的手機，
+# 或是區域網路內的其他裝置，只要打對 IP，伺服器都會接收。
+# 你的手機和開發電腦必須連接到同一個 Wi-Fi 分享器。
+# 在手機端程式（如你的 index.tsx），不能寫 localhost，必須寫電腦在區域網路中的 IP（例如你截圖中的 192.168.68.57）
+# 若沒自動Activate Virtual Environment, 手動.\.venv\Scripts\Activate.ps1 (Windows PowerShell) 或 source .venv/bin/activate (macOS/Linux) 來啟動虛擬環境
 if __name__ == "__main__":
     import uvicorn
 

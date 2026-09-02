@@ -1,4 +1,15 @@
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    func,
+)
 from sqlalchemy.orm import relationship
 
 # python .（點）代表層級：在 Python 匯入系統中，
@@ -12,12 +23,28 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
+    # 新增生日欄位，允許為空（以免舊資料噴錯）
+    birthday = Column(Date, nullable=True)
+    hashed_password = Column(String, nullable=True)  # 純 Google 帳號沒有密碼，允許為空
     is_active = Column(Boolean, default=True)
+    avatar_url = Column(String, nullable=True)  # 新增這一行
+    # Google 登入用：Google 帳號的唯一識別碼（sub）
+    google_id = Column(String, unique=True, index=True, nullable=True)
+    # 標記帳號註冊來源：'password' / 'google' / 'both'
+    auth_provider = Column(String, nullable=False, server_default="password")
 
     # 建立與 PushToken 的關聯
     push_tokens = relationship(
         "PushToken", back_populates="user", cascade="all, delete-orphan"
+    )
+
+    # 2. 補上這行：建立與 NotificationLog 的關聯 (解決 InvalidRequestError)
+    notifications = relationship(
+        "NotificationLog", back_populates="user", cascade="all, delete-orphan"
+    )
+    # 新增這行來對接 Coupon
+    coupons = relationship(
+        "Coupon", back_populates="user", cascade="all, delete-orphan"
     )
 
 
@@ -32,3 +59,54 @@ class PushToken(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="push_tokens")
+
+
+class NotificationLog(Base):
+    __tablename__ = "notification_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    title = Column(String)
+    body = Column(String)
+    data = Column(JSON, nullable=True)  # 儲存跳轉參數，例如 {"screen": "Feeder"}
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="notifications")
+
+
+class Coupon(Base):
+    __tablename__ = "coupons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    title = Column(String)  # 例如: "5月壽星禮"
+    discount_amount = Column(Float)  # 折扣金額，例如: 100.0
+    is_used = Column(Boolean, default=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)  # 使用時間
+    expired_at = Column(DateTime(timezone=True))  # 到期時間
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # 核銷碼：只存 hash，不存明文；沒有產生過或已核銷/已重新產生過就是 None
+    redeem_code_hash = Column(String, nullable=True, index=True)
+    redeem_code_expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    # 建立關聯
+    user = relationship("User", back_populates="coupons")
+
+
+class MagicLinkToken(Base):
+    __tablename__ = "magic_link_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, index=True, nullable=False)
+    # 只存 token 的 hash，不存明文；就算資料庫外洩也無法重放
+    token_hash = Column(String, unique=True, index=True, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)  # 已使用時間，None 代表尚未使用
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+## alembic 更新DB作法:
+# 1. 編輯 models.py 定義好 ORM 類別
+# 2. 執行 alembic revision --autogenerate -m "新增User 和 Notificationlog relationship 1"
+# 3. 執行 alembic upgrade head

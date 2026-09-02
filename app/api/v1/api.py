@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import items, login, notifications, users
+from app.api.v1.endpoints import coupons, items, login, notifications, users
 
 # 建立 v1 的總路由
 api_router = APIRouter()
@@ -18,3 +18,4 @@ api_router.include_router(users.router, prefix="/users", tags=["users"])
 api_router.include_router(
     notifications.router, prefix="/notifications", tags=["notifications"]
 )
+api_router.include_router(coupons.router, prefix="/coupons", tags=["coupons"])

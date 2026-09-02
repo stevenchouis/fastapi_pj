@@ -7,7 +7,7 @@ from sqlalchemy import engine_from_config, pool
 from app import models  # noqa: F401 (加上這個註解 Linter 通常就不會刪除它)
 
 # 1. 引入你的 Base Class和所有 Models
-from app.database import Base  # 確保路徑正確
+from app.database_async import Base  # 確保路徑正確
 
 # 如果 Linter 還是想刪除，可以在下面加一行：
 # _ = models.User (這行沒意義，但能證明你有用到 models)
