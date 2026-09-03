@@ -154,7 +154,7 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 # 3. 健康檢查路由 (給 Render 用的心跳點)
 @app.get("/health")
 async def health_check():
-    return {"status": "alive", "version": "1.0.1"}
+    return {"status": "alive", "version": "1.0.2"}
 
 
 # 加了這一行執行有二種方法:
