@@ -1,11 +1,13 @@
 import hashlib
+import html
+import json
 import secrets
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
@@ -123,19 +125,41 @@ async def login_google(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@router.get("/login/line/redirect")
+@router.get("/login/line/redirect", response_class=HTMLResponse)
 async def line_login_redirect(request: Request):
     """
     LINE 授權完成後的中繼落地頁。LINE Console 的 Callback URL 只接受 https 網址，
     不能直接填 App 的 mynotification:// 自訂 scheme，所以比照 Magic Link 登入的做法：
     先落地在這支後端網址，再把 LINE 帶來的 query params（code/state，或使用者取消時的
     error/error_description）原封不動轉跳到 App 的自訂 scheme，交給 App 端處理。
+
+    注意：這裡刻意不用單純的 HTTP 302（RedirectResponse），改用 HTML + JS 導向——
+    LINE App 內建瀏覽器（LIFF WebView）對「302 直接轉跳到非 http(s) 的自訂 scheme」
+    支援不完整，實測會卡住並觸發使用者端的重試迴圈；改用 meta refresh + JS
+    location.replace 對各種內嵌瀏覽器的相容性比較好，並保留一個可點擊的備用連結。
     """
     query_string = urlencode(dict(request.query_params))
     deep_link = "mynotification://redirect"
     if query_string:
         deep_link += f"?{query_string}"
-    return RedirectResponse(url=deep_link, status_code=302)
+
+    # deep_link 只由 urlencode 產生的 ASCII 組成，但 query params 本身是外部（LINE）可控的
+    # 輸入，仍然分別用 json.dumps／html.escape 做好脈絡對應的逸出，避免被拿來做 HTML/JS 注入
+    deep_link_js = json.dumps(deep_link)
+    deep_link_html = html.escape(deep_link, quote=True)
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="refresh" content="0;url={deep_link_html}" />
+<script>window.location.replace({deep_link_js});</script>
+</head>
+<body>
+<p>正在開啟 App…如果沒有自動跳轉，請點擊<a href="{deep_link_html}">這裡</a>。</p>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content)
 
 
 @router.post("/login/line")
