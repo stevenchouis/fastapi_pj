@@ -30,9 +30,15 @@ alembic upgrade head
 
 **進入點：** `app/main5.py` 是目前實際運行的應用程式（`app.main5:app`）。`app/main.py` 到 `app/main4.py` 是先前的開發版本，留在專案中作為參考／歷史紀錄——不要再擴充這些檔案；若被要求清理專案，優先考慮刪除而非「修好」它們。
 
-**請求流程：** `main5.py` → 掛載 `app.api.v1.api.api_router` 於 `settings.API_V1_STR`（`/api/v1`）→ 各資源的路由分別放在 `app/api/v1/endpoints/`（`login`、`users`、`notifications`、`coupons`、`items`）。
+**請求流程：** `main5.py` → 掛載 `app.api.v1.api.api_router` 於 `settings.API_V1_STR`（`/api/v1`）→ 各資源的路由分別放在 `app/api/v1/endpoints/`（`login`、`users`、`notifications`、`coupons`、`items`、`search`、`promotions`）。
 
-**驗證機制：** 採用 JWT Bearer Token。`app/core/security.py` 負責產生／驗證 Token 及密碼雜湊（透過 passlib 的 argon2/bcrypt）。`app/api/deps.py` 提供 `get_current_user`，會解碼 Token 中的 `sub` 欄位作為 user ID 並查出對應的 `User`——在任何受保護的路由中將它作為 FastAPI 依賴項注入即可。登入端點為 `POST /api/v1/login/access-token`（OAuth2 password form）。
+**驗證機制：** 採用 JWT Bearer Token。`app/core/security.py` 負責產生／驗證 Token 及密碼雜湊（透過 passlib 的 argon2/bcrypt）。`app/api/deps.py` 提供 `get_current_user`，會解碼 Token 中的 `sub` 欄位作為 user ID 並查出對應的 `User`——在任何受保護的路由中將它作為 FastAPI 依賴項注入即可。除了帳密登入（`POST /api/v1/login/access-token`，OAuth2 password form）之外，還有三種第三方／無密碼登入方式，皆定義在 `app/api/v1/endpoints/login.py`，最終都是查找／建立 `User` 後簽發同一套 JWT：
+
+- `POST /api/v1/login/google`——前端帶 Google `id_token`，後端用 `google-auth` 套件離線驗證簽章與 audience（`settings.GOOGLE_CLIENT_ID`），比對 `User.google_id`。
+- `POST /api/v1/login/line`——前端走 `expo-auth-session` 拿到 LINE 授權碼（`code`）+ `redirect_uri`，後端用 `httpx` 呼叫 LINE 的 `/oauth2/v2.1/token` 換 token、`/oauth2/v2.1/verify` 驗證 `id_token`，比對 `User.line_id`。**注意：** LINE 預設只給 `sub`／暱稱，不含 Email（要拿 Email 需另外申請 LINE 官方權限），所以純 LINE 帳號的 `email` 允許為 `null`；`LINE_CHANNEL_ID`／`LINE_CHANNEL_SECRET` 從 `.env` 讀取，取得前預設為空字串。
+- `POST /api/v1/login/magic-link/request` + `/verify`——Email 免密碼登入，透過 Resend 寄送一次性連結。
+
+三種第三方登入都遵循同一個「先用第三方唯一 ID 找帳號，找不到才退而用 Email 找／合併既有帳號，都沒有才新建」的 pattern（`User.auth_provider` 標記來源：`password`／`google`／`line`／`magic_link`／`both`），新增其他第三方登入時可依循此模式。
 
 **資料庫——同時存在兩套架構，修改前務必確認自己動到的是哪一套：**
 
@@ -51,8 +57,16 @@ alembic upgrade head
 
 **檔案上傳：** 上傳的檔案存放在專案根目錄的 `uploads/`（不在 `app/` 底下），並透過 `User.avatar_url` 儲存其網址。
 
+**前端可控清單類端點（後台維護、無需複雜權限模型）：** 目前有兩個這類端點，資料表由營運／後台手動維護，端點本身皆為公開（無需 JWT）：
+
+- `GET /api/v1/search/suggestions`（`app/api/v1/endpoints/search.py`）——搜尋頁「熱門搜尋標籤」，對應 `SearchSuggestion` model（`keyword`、`sort_order`、`is_active`）。
+- `GET /api/v1/promotions/home-banners`（`app/api/v1/endpoints/promotions.py`）——首頁活動輪播，對應 `Promotion` model（`tag`、`title`、`subtitle`、`color`、`image_url`、`sort_order`、`is_active`、`start_at`/`end_at` 生效區間）。
+
+新增同類端點時可依循這個模式：新增 model → `app/schemas/` 下建立對應 `*Out` schema（只回傳前端需要的欄位）→ endpoint 內用 `select` 篩 `is_active` 並依 `sort_order` 排序 → 在 `app/api/v1/api.py` 註冊路由。
+
 ## 專案慣例
 
 - 既有程式碼中的註解與 docstring 大量使用繁體中文——修改這些檔案時請延續此慣例。
 - 路由程式碼一律使用 `AsyncSession` 搭配 `sqlalchemy` 的 `select`／`update`／`delete`（2.0 風格的查詢寫法），而非舊式的 `Query` API。
 - Endpoint 程式碼通常會用 `try/except` 包住 commit 操作，失敗時 rollback，並印出／記錄除錯資訊——修改某個檔案時，請延續該檔案既有的錯誤處理風格，避免在同一模組內混用不同寫法。
+- **溝通語言：** 不論是回覆使用者，還是與前端（其他 Claude session，例如 mynotification 專案的 front-end session）跨 session 溝通，一律使用中文。

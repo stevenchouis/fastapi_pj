@@ -2,6 +2,7 @@ import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordRequestForm
@@ -109,6 +110,90 @@ async def login_google(
             await db.rollback()
             print(f"DEBUG: Google 登入建立/綁定使用者失敗: {e}")
             raise HTTPException(status_code=500, detail="Google 登入處理失敗")
+
+    if not user.is_active:
+        raise HTTPException(status_code=400, detail="帳號已被停用")
+
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = security.create_access_token(
+        subject=str(user.id),
+        expires_delta=access_token_expires,
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.post("/login/line")
+async def login_line(
+    payload: schemas.LineLoginRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    # 1. 拿授權碼跟 LINE 換 token（一併換到 id_token）
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(
+            "https://api.line.me/oauth2/v2.1/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": payload.code,
+                "redirect_uri": payload.redirect_uri,
+                "client_id": settings.LINE_CHANNEL_ID,
+                "client_secret": settings.LINE_CHANNEL_SECRET,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if token_response.status_code != 200:
+            print(f"DEBUG: LINE token 交換失敗: {token_response.text}")
+            raise HTTPException(status_code=400, detail="LINE 登入驗證失敗")
+        id_token = token_response.json().get("id_token")
+        if not id_token:
+            raise HTTPException(status_code=400, detail="LINE 登入驗證失敗")
+
+        # 2. 交給 LINE 的 verify 端點驗證 id_token 簽章與 audience，換回解碼後的 claims
+        verify_response = await client.post(
+            "https://api.line.me/oauth2/v2.1/verify",
+            data={"id_token": id_token, "client_id": settings.LINE_CHANNEL_ID},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if verify_response.status_code != 200:
+            print(f"DEBUG: LINE id_token 驗證失敗: {verify_response.text}")
+            raise HTTPException(status_code=400, detail="LINE 登入驗證失敗")
+        claims = verify_response.json()
+
+    line_id = claims["sub"]
+    # LINE 預設不給 Email（需另外申請權限），所以這裡可能是 None
+    email = claims.get("email")
+
+    # 3. 先用 line_id 找出是否已經綁定過的帳號
+    statement = select(models.User).where(models.User.line_id == line_id)
+    result = await db.execute(statement)
+    user = result.scalars().first()
+
+    if not user:
+        # 4. 尚未綁定過；如果 LINE 有給 email，改用 email 查找既有帳號並自動補綁定
+        if email:
+            statement = select(models.User).where(models.User.email == email)
+            result = await db.execute(statement)
+            user = result.scalars().first()
+
+        try:
+            if user:
+                user.line_id = line_id
+                user.auth_provider = "both"
+            else:
+                # 全新使用者，純 LINE 帳號沒有密碼；email 可能是 None
+                user = models.User(
+                    email=email,
+                    line_id=line_id,
+                    hashed_password=None,
+                    auth_provider="line",
+                    is_active=True,
+                )
+                db.add(user)
+            await db.commit()
+            await db.refresh(user)
+        except Exception as e:
+            await db.rollback()
+            print(f"DEBUG: LINE 登入建立/綁定使用者失敗: {e}")
+            raise HTTPException(status_code=500, detail="LINE 登入處理失敗")
 
     if not user.is_active:
         raise HTTPException(status_code=400, detail="帳號已被停用")

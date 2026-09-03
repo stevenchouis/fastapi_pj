@@ -1,4 +1,5 @@
 from .google_auth import GoogleLoginRequest
+from .line_auth import LineLoginRequest
 from .magic_link import MagicLinkRequest, MagicLinkVerify
 from .notification import NotificationLog, NotificationLogBase  # 新增的通知 Schema
 from .push_token import PushToken, PushTokenCreate
@@ -20,6 +21,7 @@ __all__ = [
     "UserCreate",
     "UserUpdate",
     "GoogleLoginRequest",
+    "LineLoginRequest",
     "MagicLinkRequest",
     "MagicLinkVerify",
 ]

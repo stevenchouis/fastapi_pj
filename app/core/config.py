@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     # Google 登入用：驗證 id_token 的 audience 要用這組 Web Client ID
     GOOGLE_CLIENT_ID: str
+    # LINE 登入用：Channel ID / Channel Secret（尚未取得前先允許空字串，呼叫時才報錯）
+    LINE_CHANNEL_ID: str = ""
+    LINE_CHANNEL_SECRET: str = ""
     # Magic Link 登入用：Resend 的 API Key（尚未取得前先允許空字串，寄信時才報錯）
     RESEND_API_KEY: str = ""
     # Magic Link 落地頁的完整對外網址（開發階段用區網 IP，跟 App 的 EXPO_PUBLIC_API_URL 同一台主機）

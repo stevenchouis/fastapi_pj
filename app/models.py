@@ -30,7 +30,10 @@ class User(Base):
     avatar_url = Column(String, nullable=True)  # 新增這一行
     # Google 登入用：Google 帳號的唯一識別碼（sub）
     google_id = Column(String, unique=True, index=True, nullable=True)
-    # 標記帳號註冊來源：'password' / 'google' / 'both'
+    # LINE 登入用：LINE 帳號的唯一識別碼（sub）。LINE 預設不提供 Email，
+    # 所以純 LINE 帳號的 email 欄位允許為 null，改用 line_id 當識別依據
+    line_id = Column(String, unique=True, index=True, nullable=True)
+    # 標記帳號註冊來源：'password' / 'google' / 'line' / 'both'
     auth_provider = Column(String, nullable=False, server_default="password")
 
     # 建立與 PushToken 的關聯
@@ -92,6 +95,32 @@ class Coupon(Base):
 
     # 建立關聯
     user = relationship("User", back_populates="coupons")
+
+
+class SearchSuggestion(Base):
+    __tablename__ = "search_suggestions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    keyword = Column(String, nullable=False)  # 熱門搜尋標籤文字
+    sort_order = Column(Integer, nullable=False, default=0)  # 顯示順序，數字越小越前面
+    is_active = Column(Boolean, nullable=False, default=True)  # 是否啟用（下架不刪資料）
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Promotion(Base):
+    __tablename__ = "promotions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tag = Column(String, nullable=False)  # 卡片短標籤，例如「限時」「新品」
+    title = Column(String, nullable=False)
+    subtitle = Column(String, nullable=False)
+    color = Column(String, nullable=False)  # 卡片底色 hex
+    image_url = Column(String, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)  # 顯示順序，數字越小越前面
+    is_active = Column(Boolean, nullable=False, default=True)  # 是否啟用（下架不刪資料）
+    start_at = Column(DateTime(timezone=True), nullable=True)  # 生效起始時間，可為空
+    end_at = Column(DateTime(timezone=True), nullable=True)  # 生效結束時間，可為空
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class MagicLinkToken(Base):
