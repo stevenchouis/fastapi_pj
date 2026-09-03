@@ -171,42 +171,13 @@ async def login_line(
     payload: schemas.LineLoginRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    # LINE Console 上註冊的 Callback URL 是固定值（就是上面這支 /login/line/redirect），
-    # 跟 LINE 換 token 時的 redirect_uri 必須跟註冊值一字不差，所以這裡自己組，不吃前端傳來的值
-    redirect_uri = f"{settings.BASE_URL}{settings.API_V1_STR}/login/line/redirect"
-
-    # 1. 拿授權碼跟 LINE 換 token（一併換到 id_token）
+    # App 端改用原生 SDK（@xmartlabs/react-native-line）登入，直接拿到 id_token，
+    # 不再有 authorization code／redirect_uri 這一段，直接送 LINE 的 verify 端點
+    # 驗證簽章與 audience 即可換回解碼後的 claims
     async with httpx.AsyncClient() as client:
-        token_response = await client.post(
-            "https://api.line.me/oauth2/v2.1/token",
-            data={
-                "grant_type": "authorization_code",
-                "code": payload.code,
-                "redirect_uri": redirect_uri,
-                "client_id": settings.LINE_CHANNEL_ID,
-                "client_secret": settings.LINE_CHANNEL_SECRET,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        if token_response.status_code != 200:
-            print(
-                f"DEBUG: LINE token 交換失敗 (redirect_uri={redirect_uri}): "
-                f"{token_response.text}",
-                flush=True,
-            )
-            raise HTTPException(status_code=400, detail="LINE 登入驗證失敗")
-        id_token = token_response.json().get("id_token")
-        if not id_token:
-            print(
-                f"DEBUG: LINE token 回應沒有 id_token: {token_response.text}",
-                flush=True,
-            )
-            raise HTTPException(status_code=400, detail="LINE 登入驗證失敗")
-
-        # 2. 交給 LINE 的 verify 端點驗證 id_token 簽章與 audience，換回解碼後的 claims
         verify_response = await client.post(
             "https://api.line.me/oauth2/v2.1/verify",
-            data={"id_token": id_token, "client_id": settings.LINE_CHANNEL_ID},
+            data={"id_token": payload.id_token, "client_id": settings.LINE_CHANNEL_ID},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if verify_response.status_code != 200:

@@ -3,4 +3,4 @@ from pydantic import BaseModel
 
 
 class LineLoginRequest(BaseModel):
-    code: str
+    id_token: str

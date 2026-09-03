@@ -35,7 +35,7 @@ alembic upgrade head
 **驗證機制：** 採用 JWT Bearer Token。`app/core/security.py` 負責產生／驗證 Token 及密碼雜湊（透過 passlib 的 argon2/bcrypt）。`app/api/deps.py` 提供 `get_current_user`，會解碼 Token 中的 `sub` 欄位作為 user ID 並查出對應的 `User`——在任何受保護的路由中將它作為 FastAPI 依賴項注入即可。除了帳密登入（`POST /api/v1/login/access-token`，OAuth2 password form）之外，還有三種第三方／無密碼登入方式，皆定義在 `app/api/v1/endpoints/login.py`，最終都是查找／建立 `User` 後簽發同一套 JWT：
 
 - `POST /api/v1/login/google`——前端帶 Google `id_token`，後端用 `google-auth` 套件離線驗證簽章與 audience（`settings.GOOGLE_CLIENT_ID`），比對 `User.google_id`。
-- `POST /api/v1/login/line`——前端走 `expo-auth-session` 拿到 LINE 授權碼（`code`）+ `redirect_uri`，後端用 `httpx` 呼叫 LINE 的 `/oauth2/v2.1/token` 換 token、`/oauth2/v2.1/verify` 驗證 `id_token`，比對 `User.line_id`。**注意：** LINE 預設只給 `sub`／暱稱，不含 Email（要拿 Email 需另外申請 LINE 官方權限），所以純 LINE 帳號的 `email` 允許為 `null`；`LINE_CHANNEL_ID`／`LINE_CHANNEL_SECRET` 從 `.env` 讀取，取得前預設為空字串。
+- `POST /api/v1/login/line`——前端用原生 SDK（`@xmartlabs/react-native-line`）登入後直接拿到 `id_token`，後端用 `httpx` 呼叫 LINE 的 `/oauth2/v2.1/verify` 驗證簽章與 audience（`settings.LINE_CHANNEL_ID`），比對 `User.line_id`。**注意：** LINE 預設只給 `sub`／暱稱，不含 Email（要拿 Email 需另外申請 LINE 官方權限），所以純 LINE 帳號的 `email` 允許為 `null`；`LINE_CHANNEL_ID`／`LINE_CHANNEL_SECRET` 從 `.env` 讀取，取得前預設為空字串。`GET /api/v1/login/line/redirect` 是舊版「瀏覽器 OAuth + 後端中繼落地頁」流程留下的端點（LINE Console 的 Callback URL 只接受 https，所以需要一個落地頁把 query params 轉跳到 App 的 `mynotification:///redirect` 自訂 scheme）；改用原生 SDK 後前端已不會再呼叫它，暫時保留、確認沒有其他地方依賴後可以整支移除。
 - `POST /api/v1/login/magic-link/request` + `/verify`——Email 免密碼登入，透過 Resend 寄送一次性連結。
 
 三種第三方登入都遵循同一個「先用第三方唯一 ID 找帳號，找不到才退而用 Email 找／合併既有帳號，都沒有才新建」的 pattern（`User.auth_provider` 標記來源：`password`／`google`／`line`／`magic_link`／`both`），新增其他第三方登入時可依循此模式。
