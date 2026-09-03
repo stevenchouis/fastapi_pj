@@ -1,10 +1,11 @@
 import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
@@ -122,11 +123,30 @@ async def login_google(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
+@router.get("/login/line/redirect")
+async def line_login_redirect(request: Request):
+    """
+    LINE 授權完成後的中繼落地頁。LINE Console 的 Callback URL 只接受 https 網址，
+    不能直接填 App 的 mynotification:// 自訂 scheme，所以比照 Magic Link 登入的做法：
+    先落地在這支後端網址，再把 LINE 帶來的 query params（code/state，或使用者取消時的
+    error/error_description）原封不動轉跳到 App 的自訂 scheme，交給 App 端處理。
+    """
+    query_string = urlencode(dict(request.query_params))
+    deep_link = "mynotification://redirect"
+    if query_string:
+        deep_link += f"?{query_string}"
+    return RedirectResponse(url=deep_link, status_code=302)
+
+
 @router.post("/login/line")
 async def login_line(
     payload: schemas.LineLoginRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    # LINE Console 上註冊的 Callback URL 是固定值（就是上面這支 /login/line/redirect），
+    # 跟 LINE 換 token 時的 redirect_uri 必須跟註冊值一字不差，所以這裡自己組，不吃前端傳來的值
+    redirect_uri = f"{settings.BASE_URL}{settings.API_V1_STR}/login/line/redirect"
+
     # 1. 拿授權碼跟 LINE 換 token（一併換到 id_token）
     async with httpx.AsyncClient() as client:
         token_response = await client.post(
@@ -134,7 +154,7 @@ async def login_line(
             data={
                 "grant_type": "authorization_code",
                 "code": payload.code,
-                "redirect_uri": payload.redirect_uri,
+                "redirect_uri": redirect_uri,
                 "client_id": settings.LINE_CHANNEL_ID,
                 "client_secret": settings.LINE_CHANNEL_SECRET,
             },
