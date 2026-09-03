@@ -137,9 +137,13 @@ async def line_login_redirect(request: Request):
     LINE App 內建瀏覽器（LIFF WebView）對「302 直接轉跳到非 http(s) 的自訂 scheme」
     支援不完整，實測會卡住並觸發使用者端的重試迴圈；改用 meta refresh + JS
     location.replace 對各種內嵌瀏覽器的相容性比較好，並保留一個可點擊的備用連結。
+
+    注意：目標網址刻意是三個斜線 mynotification:///redirect（不是兩個）——
+    兩斜線寫法（scheme://redirect）會讓 URL 解析規則把 "redirect" 當成
+    host 而不是 path，Expo Router 是照 path 比對路由，會比對不到。
     """
     query_string = urlencode(dict(request.query_params))
-    deep_link = "mynotification://redirect"
+    deep_link = "mynotification:///redirect"
     if query_string:
         deep_link += f"?{query_string}"
 
