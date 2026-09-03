@@ -1,9 +1,11 @@
 import asyncio
 from datetime import date, datetime, timedelta
 
+import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import extract, select
 
+from app.core.config import settings
 from app.database_async import AsyncSessionLocal  #
 from app.models import Coupon, User  #
 from app.services.push_service import send_user_push_notifications
@@ -98,6 +100,29 @@ def run_scheduler_bridge():
     loop.close()
 
 
+async def self_ping_task():
+    """
+    保活任務：定時打自己的 /health，避免 Render 免費方案閒置 15 分鐘後進入休眠。
+    間隔（見 start_scheduler）刻意設在略短於 15 分鐘，讓服務維持醒著；本機開發
+    環境 BASE_URL 通常是區網 IP，打失敗也只是印一行 log，不影響其他排程任務。
+    """
+    url = f"{settings.BASE_URL}/health"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url)
+        print(f"[{datetime.now()}] 保活 ping {url} -> {response.status_code}")
+    except Exception as e:
+        print(f"[{datetime.now()}] 保活 ping 失敗 ({url}): {e}")
+
+
+def run_self_ping_bridge():
+    """橋接 BackgroundScheduler (同步) 與 self_ping_task"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(self_ping_task())
+    loop.close()
+
+
 # 初始化排程器
 scheduler = BackgroundScheduler()
 
@@ -110,6 +135,10 @@ def start_scheduler():
     # 設定為 interval 模式，每 1 分鐘執行一次
     # scheduler.add_job(run_scheduler_bridge, "interval", minutes=1)
 
+    # 3. 保活任務：Render 免費方案閒置 15 分鐘會休眠，間隔設在略短於 15 分鐘
+    # （14 分鐘），讓服務在有人使用的期間不會冷啟動，又不會完全 24 小時佔滿額度
+    scheduler.add_job(run_self_ping_bridge, "interval", minutes=14)
+
     # 啟動排程器
     scheduler.start()
-    print("APScheduler 已啟動：正式任務 (每月25日) 與 測試任務 (每分鐘) 運行中...")
+    print("APScheduler 已啟動：正式任務 (每月25日)、保活任務 (每14分鐘) 運行中...")
