@@ -189,10 +189,18 @@ async def login_line(
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if token_response.status_code != 200:
-            print(f"DEBUG: LINE token 交換失敗: {token_response.text}")
+            print(
+                f"DEBUG: LINE token 交換失敗 (redirect_uri={redirect_uri}): "
+                f"{token_response.text}",
+                flush=True,
+            )
             raise HTTPException(status_code=400, detail="LINE 登入驗證失敗")
         id_token = token_response.json().get("id_token")
         if not id_token:
+            print(
+                f"DEBUG: LINE token 回應沒有 id_token: {token_response.text}",
+                flush=True,
+            )
             raise HTTPException(status_code=400, detail="LINE 登入驗證失敗")
 
         # 2. 交給 LINE 的 verify 端點驗證 id_token 簽章與 audience，換回解碼後的 claims
@@ -202,7 +210,9 @@ async def login_line(
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if verify_response.status_code != 200:
-            print(f"DEBUG: LINE id_token 驗證失敗: {verify_response.text}")
+            print(
+                f"DEBUG: LINE id_token 驗證失敗: {verify_response.text}", flush=True
+            )
             raise HTTPException(status_code=400, detail="LINE 登入驗證失敗")
         claims = verify_response.json()
 
