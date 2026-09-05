@@ -7,6 +7,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     func,
 )
@@ -48,6 +49,10 @@ class User(Base):
     # 新增這行來對接 Coupon
     coupons = relationship(
         "Coupon", back_populates="user", cascade="all, delete-orphan"
+    )
+    # 購物車金流：對接訂單（一個使用者可以有多筆訂單）
+    orders = relationship(
+        "Order", back_populates="user", cascade="all, delete-orphan"
     )
 
 
@@ -121,6 +126,69 @@ class Promotion(Base):
     start_at = Column(DateTime(timezone=True), nullable=True)  # 生效起始時間，可為空
     end_at = Column(DateTime(timezone=True), nullable=True)  # 生效結束時間，可為空
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Product(Base):
+    __tablename__ = "products"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # DummyJSON 原始商品 id，供匯入腳本判斷「已存在就更新、否則新增」；
+    # 手動建立（非 DummyJSON 匯入）的商品這欄位可以是 None
+    external_id = Column(Integer, unique=True, index=True, nullable=True)
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=False)
+    category = Column(String, nullable=False)
+    # 金額一律用 Numeric，避免 Float 的浮點數誤差
+    price = Column(Numeric(10, 2), nullable=False)
+    thumbnail = Column(String, nullable=False)
+    # 對齊 DummyJSON 的 images 欄位：字串網址陣列
+    images = Column(JSON, nullable=False, default=list)
+    # 庫存以這裡為權威來源，下單時原子性扣減，不信任前端當下顯示的數字
+    stock = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)  # 是否上架（下架不刪資料）
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    order_items = relationship("OrderItem", back_populates="product")
+
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    # pending / paid / failed / cancelled
+    status = Column(String, nullable=False, default="pending")
+    # 下單當下由後端重新計算，不採信前端傳入的金額
+    total_amount = Column(Numeric(10, 2), nullable=False)
+    # 目前固定綠界 ECPay，先保留欄位方便之後串第二家金流
+    payment_provider = Column(String, nullable=False, default="ecpay")
+    # 我方系統產生、送給金流的訂單編號（ECPay 的 MerchantTradeNo，長度限制 20 碼英數字）
+    merchant_trade_no = Column(String, unique=True, index=True, nullable=False)
+    # 金流那邊的交易編號（ECPay 回調的 TradeNo），付款成功前為 None
+    payment_reference = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", back_populates="orders")
+    items = relationship(
+        "OrderItem", back_populates="order", cascade="all, delete-orphan"
+    )
+
+
+class OrderItem(Base):
+    __tablename__ = "order_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id"), index=True, nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    # 下單當下的價格快照，不是即時 join Product.price——避免之後改價影響歷史訂單金額
+    unit_price = Column(Numeric(10, 2), nullable=False)
+    subtotal = Column(Numeric(10, 2), nullable=False)
+
+    order = relationship("Order", back_populates="items")
+    product = relationship("Product", back_populates="order_items")
 
 
 class MagicLinkToken(Base):

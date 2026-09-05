@@ -30,7 +30,7 @@ alembic upgrade head
 
 **進入點：** `app/main5.py` 是目前實際運行的應用程式（`app.main5:app`）。`app/main.py` 到 `app/main4.py` 是先前的開發版本，留在專案中作為參考／歷史紀錄——不要再擴充這些檔案；若被要求清理專案，優先考慮刪除而非「修好」它們。
 
-**請求流程：** `main5.py` → 掛載 `app.api.v1.api.api_router` 於 `settings.API_V1_STR`（`/api/v1`）→ 各資源的路由分別放在 `app/api/v1/endpoints/`（`login`、`users`、`notifications`、`coupons`、`items`、`search`、`promotions`）。
+**請求流程：** `main5.py` → 掛載 `app.api.v1.api.api_router` 於 `settings.API_V1_STR`（`/api/v1`）→ 各資源的路由分別放在 `app/api/v1/endpoints/`（`login`、`users`、`notifications`、`coupons`、`items`、`search`、`promotions`、`products`、`orders`）。
 
 **驗證機制：** 採用 JWT Bearer Token。`app/core/security.py` 負責產生／驗證 Token 及密碼雜湊（透過 passlib 的 argon2/bcrypt）。`app/api/deps.py` 提供 `get_current_user`，會解碼 Token 中的 `sub` 欄位作為 user ID 並查出對應的 `User`——在任何受保護的路由中將它作為 FastAPI 依賴項注入即可。除了帳密登入（`POST /api/v1/login/access-token`，OAuth2 password form）之外，還有三種第三方／無密碼登入方式，皆定義在 `app/api/v1/endpoints/login.py`，最終都是查找／建立 `User` 後簽發同一套 JWT：
 
@@ -63,6 +63,16 @@ alembic upgrade head
 - `GET /api/v1/promotions/home-banners`（`app/api/v1/endpoints/promotions.py`）——首頁活動輪播，對應 `Promotion` model（`tag`、`title`、`subtitle`、`color`、`image_url`、`sort_order`、`is_active`、`start_at`/`end_at` 生效區間）。
 
 新增同類端點時可依循這個模式：新增 model → `app/schemas/` 下建立對應 `*Out` schema（只回傳前端需要的欄位）→ endpoint 內用 `select` 篩 `is_active` 並依 `sort_order` 排序 → 在 `app/api/v1/api.py` 註冊路由。
+
+**商品／購物車／訂單（規劃中，2026-09 由前端 mynotification 提出）：** 前端要加購物車與綠界 ECPay 金流，商品資料改由自家 DB 提供，不再讓前端直接打 DummyJSON（金流串接前，價格／庫存必須是後端權威資料）。目前已完成的部分：
+
+- `Product` model（`app/models.py`）：`external_id`（DummyJSON 原始 id，供匯入腳本 upsert 判斷用，手動建立的商品可為 `null`）、`title`／`description`／`category`／`thumbnail`／`images`（對齊 DummyJSON 欄位，`images` 是字串網址陣列）、`price`／`stock`（**權威資料**，下單一律以此為準，不採信前端傳入的值）、`is_active`／`sort_order` 慣例同其他清單類 model。
+- `GET /api/v1/products`、`GET /api/v1/products/{id}`（`app/api/v1/endpoints/products.py`）——公開端點，比照前端可控清單類端點的 pattern，只回傳 `is_active` 商品。
+- `Order`／`OrderItem` model：`Order.total_amount` 由後端下單當下重新計算；`OrderItem.unit_price`/`subtotal` 是下單當下的價格快照（不是即時 join `Product.price`），避免之後改價影響歷史訂單。`Order.merchant_trade_no` 是我方產生、送給 ECPay 的訂單編號（英數字、上限 20 碼、全店唯一）。
+- `POST /api/v1/orders`、`GET /api/v1/orders/me`（`app/api/v1/endpoints/orders.py`，需登入）——建立訂單時用「`UPDATE ... WHERE stock >= 數量`」原子性扣庫存（比照 Magic Link／Coupon 核銷已在用的寫法），任一項商品庫存不足就整張訂單失敗、已扣的其他項目一併 rollback。
+- `app/scripts/seed_products.py`——可重複執行的 DummyJSON 商品匯入腳本（`python -m app.scripts.seed_products`），用 `external_id` 做 upsert，純粹是開發測試用的展示資料。
+
+**目前尚未完成、下一步要做的：** `POST /api/v1/orders` 目前只會建立 `status="pending"` 的訂單並扣庫存，**還沒有實際呼叫 ECPay** 的 Checkout API／驗證付款完成的 callback（需要商店的 `MerchantID`／`HashKey`／`HashIV`，這些要等實際申請到綠界的商店測試/正式環境金鑰後才能串，串接時要額外注意 callback 簽章驗證，避免偽造付款成功請求）。購物車本身刻意不落地到 DB（前端本機管理，結帳當下才把 `[{product_id, quantity}]` 送來建立 `Order`），沒有跨裝置同步需求；如果之後需求變了要加 `Cart`/`CartItem` 表再評估。
 
 ## 專案慣例
 
