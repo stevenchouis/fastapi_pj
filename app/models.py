@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import relationship
@@ -53,6 +54,10 @@ class User(Base):
     # 購物車金流：對接訂單（一個使用者可以有多筆訂單）
     orders = relationship(
         "Order", back_populates="user", cascade="all, delete-orphan"
+    )
+    # 收藏／願望清單
+    favorites = relationship(
+        "Favorite", back_populates="user", cascade="all, delete-orphan"
     )
 
 
@@ -150,6 +155,9 @@ class Product(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     order_items = relationship("OrderItem", back_populates="product")
+    favorited_by = relationship(
+        "Favorite", back_populates="product", cascade="all, delete-orphan"
+    )
 
 
 class Order(Base):
@@ -189,6 +197,21 @@ class OrderItem(Base):
 
     order = relationship("Order", back_populates="items")
     product = relationship("Product", back_populates="order_items")
+
+
+class Favorite(Base):
+    __tablename__ = "favorites"
+    __table_args__ = (
+        UniqueConstraint("user_id", "product_id", name="uq_favorites_user_product"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="favorites")
+    product = relationship("Product", back_populates="favorited_by")
 
 
 class MagicLinkToken(Base):

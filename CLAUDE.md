@@ -30,7 +30,7 @@ alembic upgrade head
 
 **進入點：** `app/main5.py` 是目前實際運行的應用程式（`app.main5:app`）。`app/main.py` 到 `app/main4.py` 是先前的開發版本，留在專案中作為參考／歷史紀錄——不要再擴充這些檔案；若被要求清理專案，優先考慮刪除而非「修好」它們。
 
-**請求流程：** `main5.py` → 掛載 `app.api.v1.api.api_router` 於 `settings.API_V1_STR`（`/api/v1`）→ 各資源的路由分別放在 `app/api/v1/endpoints/`（`login`、`users`、`notifications`、`coupons`、`items`、`search`、`promotions`、`products`、`orders`）。
+**請求流程：** `main5.py` → 掛載 `app.api.v1.api.api_router` 於 `settings.API_V1_STR`（`/api/v1`）→ 各資源的路由分別放在 `app/api/v1/endpoints/`（`login`、`users`、`notifications`、`coupons`、`items`、`search`、`promotions`、`products`、`orders`、`favorites`）。
 
 **驗證機制：** 採用 JWT Bearer Token。`app/core/security.py` 負責產生／驗證 Token 及密碼雜湊（透過 passlib 的 argon2/bcrypt）。`app/api/deps.py` 提供 `get_current_user`，會解碼 Token 中的 `sub` 欄位作為 user ID 並查出對應的 `User`——在任何受保護的路由中將它作為 FastAPI 依賴項注入即可。除了帳密登入（`POST /api/v1/login/access-token`，OAuth2 password form）之外，還有三種第三方／無密碼登入方式，皆定義在 `app/api/v1/endpoints/login.py`，最終都是查找／建立 `User` 後簽發同一套 JWT：
 
@@ -64,15 +64,31 @@ alembic upgrade head
 
 新增同類端點時可依循這個模式：新增 model → `app/schemas/` 下建立對應 `*Out` schema（只回傳前端需要的欄位）→ endpoint 內用 `select` 篩 `is_active` 並依 `sort_order` 排序 → 在 `app/api/v1/api.py` 註冊路由。
 
-**商品／購物車／訂單（規劃中，2026-09 由前端 mynotification 提出）：** 前端要加購物車與綠界 ECPay 金流，商品資料改由自家 DB 提供，不再讓前端直接打 DummyJSON（金流串接前，價格／庫存必須是後端權威資料）。目前已完成的部分：
+**商品／購物車／訂單（2026-09 由前端 mynotification 提出，已上線）：** 前端加了購物車與綠界 ECPay 金流，商品資料改由自家 DB 提供，不再讓前端直接打 DummyJSON（金流串接前，價格／庫存必須是後端權威資料）。
 
-- `Product` model（`app/models.py`）：`external_id`（DummyJSON 原始 id，供匯入腳本 upsert 判斷用，手動建立的商品可為 `null`）、`title`／`description`／`category`／`thumbnail`／`images`（對齊 DummyJSON 欄位，`images` 是字串網址陣列）、`price`／`stock`（**權威資料**，下單一律以此為準，不採信前端傳入的值）、`is_active`／`sort_order` 慣例同其他清單類 model。
-- `GET /api/v1/products`、`GET /api/v1/products/{id}`（`app/api/v1/endpoints/products.py`）——公開端點，比照前端可控清單類端點的 pattern，只回傳 `is_active` 商品。
-- `Order`／`OrderItem` model：`Order.total_amount` 由後端下單當下重新計算；`OrderItem.unit_price`/`subtotal` 是下單當下的價格快照（不是即時 join `Product.price`），避免之後改價影響歷史訂單。`Order.merchant_trade_no` 是我方產生、送給 ECPay 的訂單編號（英數字、上限 20 碼、全店唯一）。
-- `POST /api/v1/orders`、`GET /api/v1/orders/me`（`app/api/v1/endpoints/orders.py`，需登入）——建立訂單時用「`UPDATE ... WHERE stock >= 數量`」原子性扣庫存（比照 Magic Link／Coupon 核銷已在用的寫法），任一項商品庫存不足就整張訂單失敗、已扣的其他項目一併 rollback。
-- `app/scripts/seed_products.py`——可重複執行的 DummyJSON 商品匯入腳本（`python -m app.scripts.seed_products`），用 `external_id` 做 upsert，純粹是開發測試用的展示資料。
+- **`Product` model**（`app/models.py`）欄位：
+  - `external_id`（Integer, unique, nullable）——DummyJSON 原始商品 id，供匯入腳本判斷「已存在就更新、否則新增」；手動建立的商品可為 `null`。
+  - `title`／`description`／`category`／`thumbnail`／`images`（`images` 是 JSON 字串網址陣列）——對齊 DummyJSON 的回應欄位，減少前端改動。
+  - `price`（`Numeric(10, 2)`，**不是 Float**，避免金額浮點數誤差）、`stock`（Integer）——**這兩個欄位是權威資料**，下單一律以資料庫當下的值為準，不採信前端傳入或畫面上顯示的數字。
+  - `is_active`（Boolean，預設 `True`）——是否上架，下架不刪資料，慣例同 `SearchSuggestion`/`Promotion`。
+  - `created_at`／`updated_at`（`server_default=func.now()`，`updated_at` 另加 `onupdate=func.now()`）。
+- **`GET /api/v1/products`**（可加 `?category=xxx` 篩分類）、**`GET /api/v1/products/{id}`**（`app/api/v1/endpoints/products.py`）——公開端點（不需 JWT），只回傳 `is_active` 商品，回應 schema 是 `ProductOut`（`app/schemas/product.py`：`id`／`title`／`description`／`category`／`price`／`thumbnail`／`images`）。
+- **`Order` model**：`user_id`（FK）、`status`（`pending`/`paid`/`failed`/`cancelled`，目前只會走到 `pending`）、`total_amount`（後端下單當下重新計算，不是前端傳來的金額）、`payment_provider`（固定 `"ecpay"`，保留欄位方便之後加第二家金流）、`merchant_trade_no`（我方系統產生、送給 ECPay 的訂單編號，英數字、長度上限 20 碼、`unique=True`）、`payment_reference`（ECPay 回調的 `TradeNo`，付款成功前為 `None`）、`paid_at`。
+- **`OrderItem` model**：`order_id`／`product_id`（FK）、`quantity`、`unit_price`／`subtotal`——**下單當下的價格快照**，不是即時 join `Product.price`，避免之後改價影響歷史訂單金額。
+- **`POST /api/v1/orders`**（需登入，`app/api/v1/endpoints/orders.py`）：request body `{"items": [{"product_id": int, "quantity": int}]}`。同一商品出現多次會先合併數量；用「`UPDATE products SET stock = stock - :qty WHERE id = :id AND is_active AND stock >= :qty RETURNING price`」原子性扣庫存（比照 Magic Link／Coupon 核銷已在用的寫法），**任一項商品庫存不足或已下架，整張訂單失敗、已扣的其他項目一併 rollback**（all-or-nothing，不會出現部分商品扣了庫存卻沒建立訂單的情況）；庫存不足回 409。回應 schema `OrderOut`（`app/schemas/order.py`）內嵌完整 `items`（含 `title`／`quantity`／`unit_price`／`subtotal`），用 SQLAlchemy `selectinload` 一次把 `Order.items`／`OrderItem.product` 都撈出來，避免 N+1 查詢與 async session 下存取未載入關聯會噴 `MissingGreenlet` 的問題。
+- **`GET /api/v1/orders/me`**（需登入）——取得目前使用者的訂單列表（新到舊），格式同 `OrderOut`。
+- **`app/scripts/seed_products.py`**——可重複執行的 DummyJSON 商品匯入腳本（`python -m app.scripts.seed_products`），用 `external_id` 做 upsert（已存在就更新欄位、否則新增），純粹是開發測試用的展示資料，不是正式商品目錄。目前已匯入 194 筆。
 
-**目前尚未完成、下一步要做的：** `POST /api/v1/orders` 目前只會建立 `status="pending"` 的訂單並扣庫存，**還沒有實際呼叫 ECPay** 的 Checkout API／驗證付款完成的 callback（需要商店的 `MerchantID`／`HashKey`／`HashIV`，這些要等實際申請到綠界的商店測試/正式環境金鑰後才能串，串接時要額外注意 callback 簽章驗證，避免偽造付款成功請求）。購物車本身刻意不落地到 DB（前端本機管理，結帳當下才把 `[{product_id, quantity}]` 送來建立 `Order`），沒有跨裝置同步需求；如果之後需求變了要加 `Cart`/`CartItem` 表再評估。
+**尚未完成、下一步要做的：** `POST /api/v1/orders` 目前只會建立 `status="pending"` 的訂單並扣庫存，**還沒有實際呼叫 ECPay** 的 Checkout API／驗證付款完成的 callback（需要商店的 `MerchantID`／`HashKey`／`HashIV`，要等申請到綠界的商店測試/正式環境金鑰後才能串；串接時要額外注意 callback 簽章驗證，避免偽造付款成功請求）。購物車本身刻意不落地到 DB（前端本機管理，結帳當下才把 `[{product_id, quantity}]` 送來建立 `Order`），沒有跨裝置同步需求；如果之後需求變了要加 `Cart`/`CartItem` 表再評估。
+
+**收藏／願望清單（2026-09 由前端 mynotification 提出，已上線）：** 涵蓋商店 Grid 卡片、商品詳情頁、「我的」分頁的收藏區段，前端確認要直接存 DB（不是本機儲存）。
+
+- **`Favorite` model**（`app/models.py`）：`user_id`／`product_id`（皆為 FK，皆有 index）、`created_at`。`__table_args__` 設定 `UniqueConstraint("user_id", "product_id")`，在資料庫層面防止同一使用者對同一商品重複收藏。
+- **`POST /api/v1/favorites`**（需登入，`app/api/v1/endpoints/favorites.py`）：body `{"product_id": int}`。**設計成 idempotent**——已收藏過同一商品直接回 204，不報錯，前端不用另外判斷「是否已收藏」；先查商品是否存在且上架（不存在回 404），再查是否已收藏過（已收藏直接回傳），最後才 `INSERT`，並用 `try/except IntegrityError` 接住「同時點兩下」造成的 unique constraint 競態，一樣視為成功。
+- **`DELETE /api/v1/favorites/{product_id}`**（需登入）——用 `DELETE ... WHERE user_id AND product_id`，本來就沒收藏過也回 204，同樣是 idempotent。
+- **`GET /api/v1/favorites/me`**（需登入）——**直接回傳完整商品資料**（`join Favorite -> Product`，格式跟 `GET /api/v1/products` 完全一樣的 `ProductOut`），不是只回 `product_id` 陣列，比照 `GET /api/v1/orders/me` 內嵌完整資料的做法，前端渲染收藏清單/Grid 不用再逐一查詢商品明細。只回傳 `is_active` 的商品，依收藏時間新到舊排序。
+
+**Model 結構補充：** `User` 對 `Order`、`Favorite` 皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多。
 
 ## 專案慣例
 
