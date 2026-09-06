@@ -12,6 +12,7 @@ from app.api.v1.endpoints import (
     products,
     promotions,
     search,
+    tables,
     users,
 )
 
@@ -47,3 +48,4 @@ api_router.include_router(
 api_router.include_router(
     dine_in_orders.router, prefix="/dine-in-orders", tags=["dine-in-orders"]
 )
+api_router.include_router(tables.router, prefix="/tables", tags=["tables"])

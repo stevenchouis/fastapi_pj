@@ -272,6 +272,16 @@ class DineInOrderItem(Base):
     menu_item = relationship("MenuItem", back_populates="dine_in_order_items")
 
 
+class Table(Base):
+    __tablename__ = "tables"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # 桌號字串（例如 "A3"），店員 App 拿這個組 QR Code deep link，
+    # unique 避免同一家店建立重複桌號
+    code = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class MagicLinkToken(Base):
     __tablename__ = "magic_link_tokens"
 
