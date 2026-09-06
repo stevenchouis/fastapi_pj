@@ -1,6 +1,6 @@
 # app/schemas/dine_in_order.py
 from datetime import datetime
-from typing import List
+from typing import List, Literal
 
 from pydantic import BaseModel, Field
 
@@ -36,3 +36,8 @@ class DineInOrderOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class DineInOrderStatusUpdate(BaseModel):
+    # 目前只開放標記完成；之後如果要支援更細的現場流程（備餐中等）再加合法值
+    status: Literal["completed"]

@@ -2,7 +2,7 @@
 from decimal import Decimal
 from typing import List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,6 +15,7 @@ from app.schemas.dine_in_order import (
     DineInOrderCreate,
     DineInOrderItemOut,
     DineInOrderOut,
+    DineInOrderStatusUpdate,
 )
 from app.services.push_service import send_role_push_notifications
 
@@ -150,3 +151,59 @@ async def get_my_dine_in_orders(
     result = await db.execute(query)
     orders = result.scalars().all()
     return [_to_order_out(order) for order in orders]
+
+
+@router.get("", response_model=List[DineInOrderOut])
+async def list_dine_in_orders(
+    status: str = Query(default="pending"),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_staff_user),
+):
+    """
+    店員接單列表，只有 role="staff" 能呼叫。預設只列 pending 狀態，
+    依 created_at 舊到新排序（FIFO，先送的單先出餐）。
+    """
+    query = (
+        select(DineInOrder)
+        .where(DineInOrder.status == status)
+        .options(DINE_IN_ORDER_LOAD_OPTIONS)
+        .order_by(DineInOrder.created_at.asc())
+    )
+    result = await db.execute(query)
+    orders = result.scalars().all()
+    return [_to_order_out(order) for order in orders]
+
+
+@router.patch("/{dine_in_order_id}/status", response_model=DineInOrderOut)
+async def update_dine_in_order_status(
+    dine_in_order_id: int,
+    payload: DineInOrderStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_staff_user),
+):
+    """店員標記訂單已完成／已出餐，只有 role="staff" 能呼叫。"""
+    query = (
+        select(DineInOrder)
+        .where(DineInOrder.id == dine_in_order_id)
+        .options(DINE_IN_ORDER_LOAD_OPTIONS)
+    )
+    result = await db.execute(query)
+    order = result.scalars().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="訂單不存在")
+
+    try:
+        order.status = payload.status
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 更新堂食訂單狀態失敗: {e}")
+        raise HTTPException(status_code=500, detail="更新訂單狀態失敗")
+
+    query = (
+        select(DineInOrder)
+        .where(DineInOrder.id == dine_in_order_id)
+        .options(DINE_IN_ORDER_LOAD_OPTIONS)
+    )
+    result = await db.execute(query)
+    return _to_order_out(result.scalars().first())

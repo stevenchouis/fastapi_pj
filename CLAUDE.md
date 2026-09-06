@@ -96,6 +96,8 @@ alembic upgrade head
 - **`DineInOrderItem` model**：`order_id`／`menu_item_id`（FK）、`quantity`、`unit_price`／`subtotal`——下單當下的價格快照，做法比照 `OrderItem`。
 - **`POST /api/v1/dine-in-orders`**（需登入，`app/api/v1/endpoints/dine_in_orders.py`）：request body `{"table_number": str, "items": [{"menu_item_id": int, "quantity": int}]}`。同一品項出現多次會先合併數量；價格一律以資料庫當下的值為準。沒有庫存扣減，只檢查品項存在且 `is_available`，缺一項就整單回 409（維持跟 `/orders` 一致的錯誤語意，但這裡沒有「已扣一部分要 rollback」的問題，因為本來就不扣庫存）。回應 schema `DineInOrderOut`（`app/schemas/dine_in_order.py`），用 `selectinload` 一次把 `DineInOrder.items`／`DineInOrderItem.menu_item` 都撈出來。
 - **`GET /api/v1/dine-in-orders/me`**（需登入）——取得目前使用者的堂食點餐紀錄（新到舊），格式同 `DineInOrderOut`。
+- **`GET /api/v1/dine-in-orders`**（需 `role="staff"`，見下方角色機制一節）——店員接單列表，可加 `?status=xxx` 篩選（預設 `pending`），依 `created_at` **舊到新**排序（FIFO，先送的單先出餐），跟 `/me` 共用同一個 `DineInOrderOut` schema（沒有另外做精簡版，`items` 裡的 `unit_price`/`subtotal` 店員端用不到但不影響解析，忽略即可）。
+- **`PATCH /api/v1/dine-in-orders/{id}/status`**（需 `role="staff"`）——標記訂單狀態，body `{"status": "completed"}`（`DineInOrderStatusUpdate` schema 用 `Literal["completed"]` 限制，帶其他值回 422），找不到訂單回 404。目前只開放標成 `completed` 這一個目標值，之後如果要支援更細的現場流程（例如「備餐中」）可以再加合法值，`DineInOrder.status` 本身是自由字串沒有 DB 層 enum 限制。
 - **`app/scripts/seed_menu_items.py`**——可重複執行的菜單測試資料腳本（`python -m app.scripts.seed_menu_items`），用 `name` 做 upsert，純粹開發測試用，不是正式菜單。
 
 **桌位管理（2026-09 由 staff session 提出，已上線）：** 店員端 App（staff-scanner）原本把桌位清單存在裝置本機 AsyncStorage，導致不同店員裝置看到的桌位清單不同步，改成存 DB 讓所有店員裝置共用同一份。
