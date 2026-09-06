@@ -30,7 +30,7 @@ alembic upgrade head
 
 **進入點：** `app/main5.py` 是目前實際運行的應用程式（`app.main5:app`）。`app/main.py` 到 `app/main4.py` 是先前的開發版本，留在專案中作為參考／歷史紀錄——不要再擴充這些檔案；若被要求清理專案，優先考慮刪除而非「修好」它們。
 
-**請求流程：** `main5.py` → 掛載 `app.api.v1.api.api_router` 於 `settings.API_V1_STR`（`/api/v1`）→ 各資源的路由分別放在 `app/api/v1/endpoints/`（`login`、`users`、`notifications`、`coupons`、`items`、`search`、`promotions`、`products`、`orders`、`favorites`）。
+**請求流程：** `main5.py` → 掛載 `app.api.v1.api.api_router` 於 `settings.API_V1_STR`（`/api/v1`）→ 各資源的路由分別放在 `app/api/v1/endpoints/`（`login`、`users`、`notifications`、`coupons`、`items`、`search`、`promotions`、`products`、`orders`、`favorites`、`menu_items`、`dine_in_orders`）。
 
 **驗證機制：** 採用 JWT Bearer Token。`app/core/security.py` 負責產生／驗證 Token 及密碼雜湊（透過 passlib 的 argon2/bcrypt）。`app/api/deps.py` 提供 `get_current_user`，會解碼 Token 中的 `sub` 欄位作為 user ID 並查出對應的 `User`——在任何受保護的路由中將它作為 FastAPI 依賴項注入即可。除了帳密登入（`POST /api/v1/login/access-token`，OAuth2 password form）之外，還有三種第三方／無密碼登入方式，皆定義在 `app/api/v1/endpoints/login.py`，最終都是查找／建立 `User` 後簽發同一套 JWT：
 
@@ -75,7 +75,7 @@ alembic upgrade head
 - **`GET /api/v1/products`**（可加 `?category=xxx` 篩分類）、**`GET /api/v1/products/{id}`**（`app/api/v1/endpoints/products.py`）——公開端點（不需 JWT），只回傳 `is_active` 商品，回應 schema 是 `ProductOut`（`app/schemas/product.py`：`id`／`title`／`description`／`category`／`price`／`thumbnail`／`images`）。
 - **`Order` model**：`user_id`（FK）、`status`（`pending`/`paid`/`failed`/`cancelled`，目前只會走到 `pending`）、`total_amount`（後端下單當下重新計算，不是前端傳來的金額）、`payment_provider`（固定 `"ecpay"`，保留欄位方便之後加第二家金流）、`merchant_trade_no`（我方系統產生、送給 ECPay 的訂單編號，英數字、長度上限 20 碼、`unique=True`）、`payment_reference`（ECPay 回調的 `TradeNo`，付款成功前為 `None`）、`paid_at`。
 - **`OrderItem` model**：`order_id`／`product_id`（FK）、`quantity`、`unit_price`／`subtotal`——**下單當下的價格快照**，不是即時 join `Product.price`，避免之後改價影響歷史訂單金額。
-- **`POST /api/v1/orders`**（需登入，`app/api/v1/endpoints/orders.py`）：request body `{"items": [{"product_id": int, "quantity": int}]}`。同一商品出現多次會先合併數量；用「`UPDATE products SET stock = stock - :qty WHERE id = :id AND is_active AND stock >= :qty RETURNING price`」原子性扣庫存（比照 Magic Link／Coupon 核銷已在用的寫法），**任一項商品庫存不足或已下架，整張訂單失敗、已扣的其他項目一併 rollback**（all-or-nothing，不會出現部分商品扣了庫存卻沒建立訂單的情況）；庫存不足回 409。回應 schema `OrderOut`（`app/schemas/order.py`）內嵌完整 `items`（含 `title`／`quantity`／`unit_price`／`subtotal`），用 SQLAlchemy `selectinload` 一次把 `Order.items`／`OrderItem.product` 都撈出來，避免 N+1 查詢與 async session 下存取未載入關聯會噴 `MissingGreenlet` 的問題。
+- **`POST /api/v1/orders`**（需登入，`app/api/v1/endpoints/orders.py`）：request body `{"items": [{"product_id": int, "quantity": int}]}`。同一商品出現多次會先合併數量；用「`UPDATE products SET stock = stock - :qty WHERE id = :id AND is_active AND stock >= :qty RETURNING price`」原子性扣庫存（比照 Magic Link／Coupon 核銷已在用的寫法），**任一項商品庫存不足或已下架，整張訂單失敗、已扣的其他項目一併 rollback**（all-or-nothing，不會出現部分商品扣了庫存卻沒建立訂單的情況）；庫存不足回 409。回應 schema `OrderOut`（`app/schemas/order.py`）內嵌完整 `items`（含 `title`／`quantity`／`unit_price`／`subtotal`），用 SQLAlchemy `selectinload` 一次把 `Order.items`／`OrderItem.product` 都撈出來，避免 N+1 查詢與 async session 下存取未載入關聯會噴 `MissingGreenlet` 的問題。**另一個踩過的 `MissingGreenlet` 坑：** `AsyncSessionLocal` 沒有設定 `expire_on_commit=False`，`await db.commit()` 後 session 預設會把物件所有屬性標記為過期，這時如果直接存取剛 commit 完的物件的 `.id`（拿來重新查詢完整關聯用）會觸發「同步屬性存取觸發非同步重新查詢」而噴 `MissingGreenlet`（2026-09 在堂食點餐開發時發現，`orders.py` 原本也有這個 bug，已一併修正）。**慣例：** 需要在 commit 後用剛建立物件的 id 重新查詢時，務必在 `await db.commit()` 之前先 `await db.flush()` 並把 `.id` 存成區域變數，commit 後只用該區域變數，不要再碰物件屬性。
 - **`GET /api/v1/orders/me`**（需登入）——取得目前使用者的訂單列表（新到舊），格式同 `OrderOut`。
 - **`app/scripts/seed_products.py`**——可重複執行的 DummyJSON 商品匯入腳本（`python -m app.scripts.seed_products`），用 `external_id` 做 upsert（已存在就更新欄位、否則新增），純粹是開發測試用的展示資料，不是正式商品目錄。目前已匯入 194 筆。
 
@@ -88,7 +88,19 @@ alembic upgrade head
 - **`DELETE /api/v1/favorites/{product_id}`**（需登入）——用 `DELETE ... WHERE user_id AND product_id`，本來就沒收藏過也回 204，同樣是 idempotent。
 - **`GET /api/v1/favorites/me`**（需登入）——**直接回傳完整商品資料**（`join Favorite -> Product`，格式跟 `GET /api/v1/products` 完全一樣的 `ProductOut`），不是只回 `product_id` 陣列，比照 `GET /api/v1/orders/me` 內嵌完整資料的做法，前端渲染收藏清單/Grid 不用再逐一查詢商品明細。只回傳 `is_active` 的商品，依收藏時間新到舊排序。
 
-**Model 結構補充：** `User` 對 `Order`、`Favorite` 皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多。
+**堂食點餐（2026-09 由前端 mynotification 提出，已上線第一版）：** 顧客到店用手機自助點餐（選桌號→瀏覽菜單→加入清單→送出），跟網購商店／購物車是分開的兩個流程，刻意不共用 `Product`/`Order`——理由是現有 `Order` 的欄位（`payment_provider`/`merchant_trade_no`/`payment_reference`/`paid_at`）是圍繞 ECPay 線上金流設計的，堂食不一定馬上有金流動作，硬塞會出現一堆語意不明的 nullable 欄位；`status` 語意也不同（堂食未來可能要有「備餐中／已出餐」這種現場流程狀態，跟網購的付款狀態不是同一回事）。
+
+- **`MenuItem` model**（`app/models.py`）：`name`／`description`／`category`／`price`（`Numeric(10,2)`，同 `Product` 避免浮點誤差）／`image_url`／`is_available`（Boolean，預設 `True`）。**跟 `Product` 的關鍵差異：沒有 `stock`**——內用點餐沒有精準防超賣的需求，賣完由店員手動關閉 `is_available` 即可，不需要原子扣庫存。
+- **`GET /api/v1/menu-items`**（可加 `?category=xxx`）、**`GET /api/v1/menu-items/{id}`**（`app/api/v1/endpoints/menu_items.py`）——公開端點，只回傳 `is_available` 的品項，回應 schema `MenuItemOut`（`app/schemas/menu_item.py`）。
+- **`DineInOrder` model**：`user_id`（FK，需登入下單）、`table_number`（String——**前端是自由文字輸入框**，例如 `"A3"`，後端不做格式驗證或提供桌號清單查詢）、`status`（預設 `pending`，跟 `Order.status` 是各自獨立的欄位／語意）、`total_amount`（後端重新計算，不採信前端金額）。
+- **`DineInOrderItem` model**：`order_id`／`menu_item_id`（FK）、`quantity`、`unit_price`／`subtotal`——下單當下的價格快照，做法比照 `OrderItem`。
+- **`POST /api/v1/dine-in-orders`**（需登入，`app/api/v1/endpoints/dine_in_orders.py`）：request body `{"table_number": str, "items": [{"menu_item_id": int, "quantity": int}]}`。同一品項出現多次會先合併數量；價格一律以資料庫當下的值為準。沒有庫存扣減，只檢查品項存在且 `is_available`，缺一項就整單回 409（維持跟 `/orders` 一致的錯誤語意，但這裡沒有「已扣一部分要 rollback」的問題，因為本來就不扣庫存）。回應 schema `DineInOrderOut`（`app/schemas/dine_in_order.py`），用 `selectinload` 一次把 `DineInOrder.items`／`DineInOrderItem.menu_item` 都撈出來。
+- **`GET /api/v1/dine-in-orders/me`**（需登入）——取得目前使用者的堂食點餐紀錄（新到舊），格式同 `DineInOrderOut`。
+- **`app/scripts/seed_menu_items.py`**——可重複執行的菜單測試資料腳本（`python -m app.scripts.seed_menu_items`），用 `name` 做 upsert，純粹開發測試用，不是正式菜單。
+
+**尚未完成、下一步要做的（堂食點餐）：** 目前 `User` 完全沒有 `role`（customer/staff）概念，店員端 App（`staff` session 負責的 staff-scanner）跟顧客走同一套帳密登入。下一步規劃是在 `User` 加 `role` 欄位，讓：(1) 送出堂食訂單後可以篩 `role="staff"` 的使用者推播新訂單通知；(2) 順便補上 `coupons/redeem`（`app/api/v1/endpoints/coupons.py`）目前完全沒有身份檢查的已知缺口（任何登入帳號都能核銷任何人的優惠券）。這兩塊等 `role` 落地時要一起做，並通知 staff session 調整登入流程（讓 App 端能從登入回應知道帳號能不能核銷）。
+
+**Model 結構補充：** `User` 對 `Order`、`Favorite`、`DineInOrder` 皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多；`MenuItem` 對 `DineInOrderItem` 為一對多。
 
 ## 專案慣例
 

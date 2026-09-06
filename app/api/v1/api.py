@@ -2,9 +2,11 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     coupons,
+    dine_in_orders,
     favorites,
     items,
     login,
+    menu_items,
     notifications,
     orders,
     products,
@@ -38,4 +40,10 @@ api_router.include_router(products.router, prefix="/products", tags=["products"]
 api_router.include_router(orders.router, prefix="/orders", tags=["orders"])
 api_router.include_router(
     favorites.router, prefix="/favorites", tags=["favorites"]
+)
+api_router.include_router(
+    menu_items.router, prefix="/menu-items", tags=["menu-items"]
+)
+api_router.include_router(
+    dine_in_orders.router, prefix="/dine-in-orders", tags=["dine-in-orders"]
 )

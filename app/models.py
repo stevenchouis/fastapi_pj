@@ -59,6 +59,10 @@ class User(Base):
     favorites = relationship(
         "Favorite", back_populates="user", cascade="all, delete-orphan"
     )
+    # 到店自助點餐（跟網購 orders 是分開的兩個流程）
+    dine_in_orders = relationship(
+        "DineInOrder", back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class PushToken(Base):
@@ -212,6 +216,60 @@ class Favorite(Base):
 
     user = relationship("User", back_populates="favorites")
     product = relationship("Product", back_populates="favorited_by")
+
+
+class MenuItem(Base):
+    __tablename__ = "menu_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=False)
+    category = Column(String, nullable=False)
+    price = Column(Numeric(10, 2), nullable=False)
+    image_url = Column(String, nullable=False)
+    # 內用點餐不需要像 Product 那樣原子扣庫存，賣完由店員手動關閉即可
+    is_available = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    dine_in_order_items = relationship("DineInOrderItem", back_populates="menu_item")
+
+
+class DineInOrder(Base):
+    __tablename__ = "dine_in_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    table_number = Column(String, nullable=False)
+    # pending / preparing / served / cancelled——現場出餐流程狀態，
+    # 跟網購 Order.status 的付款狀態語意不同，故分開兩張表，不共用同一個 status 欄位
+    status = Column(String, nullable=False, default="pending")
+    total_amount = Column(Numeric(10, 2), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="dine_in_orders")
+    items = relationship(
+        "DineInOrderItem", back_populates="order", cascade="all, delete-orphan"
+    )
+
+
+class DineInOrderItem(Base):
+    __tablename__ = "dine_in_order_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(
+        Integer, ForeignKey("dine_in_orders.id"), index=True, nullable=False
+    )
+    menu_item_id = Column(Integer, ForeignKey("menu_items.id"), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    # 下單當下的價格快照，避免之後菜單改價影響歷史訂單金額（比照 OrderItem 的做法）
+    unit_price = Column(Numeric(10, 2), nullable=False)
+    subtotal = Column(Numeric(10, 2), nullable=False)
+
+    order = relationship("DineInOrder", back_populates="items")
+    menu_item = relationship("MenuItem", back_populates="dine_in_order_items")
 
 
 class MagicLinkToken(Base):

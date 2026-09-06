@@ -131,6 +131,11 @@ async def create_order(
         )
         order.items = order_items
         db.add(order)
+        # 先 flush 拿到 id（此時屬性還沒過期），commit 後 session 預設會
+        # expire 掉所有屬性，之後再存取 order.id 會觸發同步環境下無法完成的
+        # 非同步重新查詢（MissingGreenlet），所以要在 commit 前存成區域變數
+        await db.flush()
+        order_id = order.id
         await db.commit()
     except HTTPException:
         raise
@@ -139,7 +144,7 @@ async def create_order(
         print(f"DEBUG: 建立訂單失敗: {e}")
         raise HTTPException(status_code=500, detail="建立訂單失敗")
 
-    query = select(Order).where(Order.id == order.id).options(ORDER_LOAD_OPTIONS)
+    query = select(Order).where(Order.id == order_id).options(ORDER_LOAD_OPTIONS)
     result = await db.execute(query)
     order = result.scalars().first()
     return _to_order_out(order)
