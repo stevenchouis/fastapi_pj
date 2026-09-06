@@ -37,6 +37,10 @@ class User(Base):
     line_id = Column(String, unique=True, index=True, nullable=True)
     # 標記帳號註冊來源：'password' / 'google' / 'line' / 'both'
     auth_provider = Column(String, nullable=False, server_default="password")
+    # 帳號角色：'customer' / 'staff'。目前沒有自助升級端點，
+    # 要開通店員帳號得直接去 DB 手動改這個欄位（比照 SearchSuggestion/Promotion
+    # 後台手動維護的慣例）
+    role = Column(String, nullable=False, server_default="customer")
 
     # 建立與 PushToken 的關聯
     push_tokens = relationship(

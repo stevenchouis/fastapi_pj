@@ -99,11 +99,12 @@ async def create_redeem_code(
 async def redeem_coupon(
     payload: CouponRedeemRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(deps.get_current_user),
+    current_user=Depends(deps.get_current_staff_user),
 ):
     """
-    用核銷碼核銷優惠券。目前仍是消費者用自己的 JWT 呼叫（人工核銷過渡方案），
-    不檢查優惠券擁有者是否為 current_user —— 之後改為店員角色呼叫時這裡不用改。
+    用核銷碼核銷優惠券，只有 role="staff" 的帳號能呼叫（顧客帳號會 403）。
+    不檢查優惠券擁有者是否為 current_user——核銷碼本身已經是單次使用、
+    有效期限只有 10 分鐘的憑證，任何店員核銷任何顧客的優惠券都是合理情境。
     """
     code_hash = hashlib.sha256(payload.code.encode()).hexdigest()
     now = datetime.now(UTC)
@@ -143,15 +144,19 @@ async def redeem_coupon(
 @router.post(
     "/admin/issue",
     response_model=CouponOut,
-    dependencies=[Depends(deps.verify_admin_key)],
-    include_in_schema=False,  # 不對外公開在 Swagger /docs，只給知道路徑跟 Admin Key 的人用
+    dependencies=[Depends(deps.verify_admin_or_staff)],
+    include_in_schema=False,  # 不對外公開在 Swagger /docs，只給知道路徑的人用
 )
 async def admin_issue_coupon(
     payload: AdminIssueCouponRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
-    """管理者手動發券：活動加碼、客訴補償用。用 X-Admin-Key header 保護，不走一般使用者 JWT。"""
+    """
+    手動發券：活動加碼、客訴補償用。雙軌驗證（見 deps.verify_admin_or_staff）：
+    X-Admin-Key header（老闆／營運用 Postman 手動操作）或 role="staff" 的 JWT
+    （店員 App 登入後用自己帳號發券）皆可通過，不強制走某一種。
+    """
     result = await db.execute(select(User).where(User.email == payload.user_email))
     user = result.scalars().first()
     if not user:

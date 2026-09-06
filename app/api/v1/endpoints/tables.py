@@ -13,15 +13,13 @@ from app.schemas.table import TableCreate, TableOut
 
 router = APIRouter()
 
-# TODO(role): 目前只要求登入（不分顧客／店員），任何登入成功的帳號都能新增／
-# 刪除桌位。這是暫時性缺口，跟 coupons/redeem 的授權缺口並列——等 User.role
-# 機制落地後要一起收緊成只有 staff 角色能呼叫這三支端點。
+# 三支端點都要求 role="staff"（deps.get_current_staff_user），顧客帳號呼叫會 403。
 
 
 @router.get("", response_model=List[TableOut])
 async def list_tables(
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(deps.get_current_user),
+    current_user=Depends(deps.get_current_staff_user),
 ):
     """列出所有桌位，供店員管理畫面使用。"""
     query = select(Table).order_by(Table.code)
@@ -33,7 +31,7 @@ async def list_tables(
 async def create_table(
     payload: TableCreate,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(deps.get_current_user),
+    current_user=Depends(deps.get_current_staff_user),
 ):
     """新增桌位。桌號重複回 409。"""
     try:
@@ -58,7 +56,7 @@ async def create_table(
 async def delete_table(
     table_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(deps.get_current_user),
+    current_user=Depends(deps.get_current_staff_user),
 ):
     """刪除桌位，找不到回 404。"""
     result = await db.execute(select(Table.id).where(Table.id == table_id))

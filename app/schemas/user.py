@@ -27,6 +27,7 @@ class User(UserBase):
     # 必須新增這一行，GET /me 才會回傳這個欄位
     avatar_url: str | None = None
     birthday: date | None = None  # 新增生日欄位
+    role: str = "customer"  # 'customer' / 'staff'，App 端登入後呼叫 GET /me 用這個判斷能不能核銷
 
     class Config:
         from_attributes = True  # 允許 Pydantic 讀取 SQLAlchemy 模型

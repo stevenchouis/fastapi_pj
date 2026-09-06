@@ -101,10 +101,20 @@ alembic upgrade head
 **桌位管理（2026-09 由 staff session 提出，已上線）：** 店員端 App（staff-scanner）原本把桌位清單存在裝置本機 AsyncStorage，導致不同店員裝置看到的桌位清單不同步，改成存 DB 讓所有店員裝置共用同一份。
 
 - **`Table` model**（`app/models.py`）：`code`（String，`unique=True`——桌號字串如 `"A3"`，store-scanner 端拿這個組 QR Code deep link）、`created_at`。**跟 `DineInOrder.table_number` 沒有 FK 關聯**——顧客端桌號是自由文字輸入不查表（見上方堂食點餐一節），`Table` 純粹是店員管理清單用，兩者故意脫鉤。
-- **`GET /api/v1/tables`**／**`POST /api/v1/tables`**（body `{"code": str}`，重複回 409）／**`DELETE /api/v1/tables/{id}`**（找不到回 404），皆定義在 `app/api/v1/endpoints/tables.py`，皆需登入。
+- **`GET /api/v1/tables`**／**`POST /api/v1/tables`**（body `{"code": str}`，重複回 409）／**`DELETE /api/v1/tables/{id}`**（找不到回 404），皆定義在 `app/api/v1/endpoints/tables.py`，皆需 `role="staff"`（見下方 role 機制一節）。
 - 目前沒有多門市／租戶概念（`User`／`Product`／`MenuItem` 也都沒有），所以桌位清單是全域共用一份，刻意不加 `store_id` 卡位——真的要做多門市會是一次橫跨這幾張表的架構調整，不是現在能局部預留的。
 
-**尚未完成、下一步要做的（role 相關，目前累積了三個依賴同一個機制的缺口）：** 目前 `User` 完全沒有 `role`（customer/staff）概念，店員端 App（`staff` session 負責的 staff-scanner）跟顧客走同一套帳密登入。下一步規劃是在 `User` 加 `role` 欄位，讓：(1) 送出堂食訂單後可以篩 `role="staff"` 的使用者推播新訂單通知；(2) 補上 `coupons/redeem`（`app/api/v1/endpoints/coupons.py`）目前完全沒有身份檢查的已知缺口（任何登入帳號都能核銷任何人的優惠券）；(3) 收緊 `app/api/v1/endpoints/tables.py` 這三支端點——目前只要求登入（`get_current_user`），**任何顧客帳號也能新增／刪除桌位**，是暫時性妥協（staff session 已知情並同意先這樣上線）。這三塊等 `role` 落地時要一起做，並通知 staff session 調整登入流程（讓 App 端能從登入回應知道帳號角色）。
+**角色機制／`User.role`（2026-09，已上線）：** 店員端 App（`staff` session 負責的 staff-scanner）跟顧客走同一套帳密登入，之前有好幾個功能都卡在「無法區分顧客／店員」這件事上，這次一次補齊：
+
+- **`User.role`**（`app/models.py`）：`String`，`server_default="customer"`，值只有 `"customer"`／`"staff"`。**沒有自助升級端點**——要開通店員帳號得直接去 DB 手動把某個既有帳號的 `role` 改成 `"staff"`（比照 `SearchSuggestion`/`Promotion` 後台手動維護的慣例）。`GET /api/v1/users/me`（`app/schemas/user.py` 的 `User` schema）會回傳這個欄位，App 登入後呼叫一次就知道自己是不是店員。
+- **`app/api/deps.py` 新增兩個依賴**：
+  - `get_current_staff_user`——包一層 `get_current_user`，再檢查 `role == "staff"`，不是就 403。給「只有店員能呼叫」的端點用。
+  - `verify_admin_or_staff`——雙軌驗證，目前只有 `coupons/admin/issue` 在用：`X-Admin-Key` header **或** `role="staff"` 的 JWT，兩種認證方式擇一通過即可（用 `optional_oauth2 = OAuth2PasswordBearer(..., auto_error=False)` 讓沒帶 Authorization header 時不會直接被拒絕，才有機會改走 `X-Admin-Key` 那條路）。
+- **這次一起收緊／串接的 4 個地方**：
+  1. `POST /api/v1/dine-in-orders` 建立訂單後，透過 `send_role_push_notifications(db_factory, "staff", ...)`（`app/services/push_service.py`，新函式，跟既有的 `send_user_push_notifications` 共用底層的 `_publish_to_tokens` 發送迴圈）推播給所有 `role="staff"` 的使用者，每人各留一筆 `NotificationLog`。
+  2. `POST /api/v1/coupons/redeem`（`app/api/v1/endpoints/coupons.py`）——依賴改成 `get_current_staff_user`，不再是任何登入帳號都能核銷任何人的優惠券；核銷碼本身仍然不檢查 `Coupon.user_id`（單次使用＋10 分鐘效期的憑證，任何店員核銷任何顧客的券是合理情境，這點不變）。
+  3. `app/api/v1/endpoints/tables.py` 三支端點——依賴從 `get_current_user` 改成 `get_current_staff_user`。
+  4. `POST /api/v1/coupons/admin/issue`——`dependencies` 從單純 `verify_admin_key` 改成 `verify_admin_or_staff`，`X-Admin-Key`（老闆／營運用 Postman 手動發券）跟 `role="staff"` JWT（店員 App 登入後用自己帳號發券）兩條路都保留，staff session 那邊確認需要雙軌並存，不能只留其中一種。
 
 **Model 結構補充：** `User` 對 `Order`、`Favorite`、`DineInOrder` 皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多；`MenuItem` 對 `DineInOrderItem` 為一對多。
 

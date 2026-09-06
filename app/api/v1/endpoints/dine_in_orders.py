@@ -2,13 +2,13 @@
 from decimal import Decimal
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
-from app.database_async import get_db
+from app.database_async import AsyncSessionLocal, get_db
 from app.models import DineInOrder, DineInOrderItem
 from app.models import MenuItem as MenuItemModel
 from app.schemas.dine_in_order import (
@@ -16,6 +16,7 @@ from app.schemas.dine_in_order import (
     DineInOrderItemOut,
     DineInOrderOut,
 )
+from app.services.push_service import send_role_push_notifications
 
 router = APIRouter()
 
@@ -47,6 +48,7 @@ def _to_order_out(order: DineInOrder) -> DineInOrderOut:
 @router.post("", response_model=DineInOrderOut, status_code=201)
 async def create_dine_in_order(
     payload: DineInOrderCreate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(deps.get_current_user),
 ):
@@ -118,6 +120,18 @@ async def create_dine_in_order(
     )
     result = await db.execute(query)
     order = result.scalars().first()
+
+    # 送出訂單後推播通知所有店員（role="staff"），讓他們知道有新訂單要備餐；
+    # 比照 push_service 既有慣例，session 已經 commit 完才觸發，不佔用交易時間
+    background_tasks.add_task(
+        send_role_push_notifications,
+        AsyncSessionLocal,
+        "staff",
+        "🍽️ 新的堂食訂單",
+        f"桌號 {order.table_number} 送出新訂單",
+        {"screen": "DineInOrders", "dine_in_order_id": order_id},
+    )
+
     return _to_order_out(order)
 
 
