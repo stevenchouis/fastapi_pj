@@ -1,13 +1,19 @@
 # app/api/v1/endpoints/menu_items.py
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api import deps
 from app.database_async import get_db
 from app.models import MenuItem
-from app.schemas.menu_item import MenuItemOut
+from app.schemas.menu_item import (
+    MenuItemAdminOut,
+    MenuItemCreate,
+    MenuItemOut,
+    MenuItemUpdate,
+)
 
 router = APIRouter()
 
@@ -29,6 +35,23 @@ async def list_menu_items(
     return result.scalars().all()
 
 
+# 注意：/admin 要放在 /{menu_item_id} 前面註冊，不然 "admin" 會先被
+# /{menu_item_id}（int）那條路由吃掉，變成 422 而不是進到這支。
+@router.get("/admin", response_model=List[MenuItemAdminOut])
+async def list_menu_items_admin(
+    category: Optional[str] = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_staff_user),
+):
+    """店員後台菜單列表，含已下架（is_available=False）品項，供產品資料維護功能使用。"""
+    query = select(MenuItem)
+    if category:
+        query = query.where(MenuItem.category == category)
+    query = query.order_by(MenuItem.id)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
 @router.get("/{menu_item_id}", response_model=MenuItemOut)
 async def get_menu_item(menu_item_id: int, db: AsyncSession = Depends(get_db)):
     query = select(MenuItem).where(
@@ -39,3 +62,56 @@ async def get_menu_item(menu_item_id: int, db: AsyncSession = Depends(get_db)):
     if not menu_item:
         raise HTTPException(status_code=404, detail="品項不存在")
     return menu_item
+
+
+@router.post("", response_model=MenuItemAdminOut, status_code=status.HTTP_201_CREATED)
+async def create_menu_item(
+    payload: MenuItemCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_staff_user),
+):
+    """店員新增菜單品項。"""
+    try:
+        menu_item = MenuItem(**payload.model_dump())
+        db.add(menu_item)
+        await db.flush()
+        menu_item_id = menu_item.id
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 新增菜單品項失敗: {e}")
+        raise HTTPException(status_code=500, detail="新增菜單品項失敗")
+
+    result = await db.execute(select(MenuItem).where(MenuItem.id == menu_item_id))
+    return result.scalars().first()
+
+
+@router.patch("/{menu_item_id}", response_model=MenuItemAdminOut)
+async def update_menu_item(
+    menu_item_id: int,
+    payload: MenuItemUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_staff_user),
+):
+    """
+    店員編輯菜單品項。全部欄位皆為絕對覆蓋（last-write-wins）——MenuItem 沒有庫存
+    數量概念，刪除（下架）用 PATCH {"is_available": false} 即可，不提供 DELETE。
+    """
+    result = await db.execute(select(MenuItem).where(MenuItem.id == menu_item_id))
+    menu_item = result.scalars().first()
+    if not menu_item:
+        raise HTTPException(status_code=404, detail="品項不存在")
+
+    data = payload.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        setattr(menu_item, field, value)
+
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 更新菜單品項失敗: {e}")
+        raise HTTPException(status_code=500, detail="更新菜單品項失敗")
+
+    result = await db.execute(select(MenuItem).where(MenuItem.id == menu_item_id))
+    return result.scalars().first()
