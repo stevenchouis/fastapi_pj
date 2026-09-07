@@ -13,6 +13,8 @@ class DineInOrderItemCreate(BaseModel):
 class DineInOrderCreate(BaseModel):
     table_number: str = Field(min_length=1)
     items: List[DineInOrderItemCreate] = Field(min_length=1)
+    # 要折抵的點數（可選），規則同 /orders：1 點 = NT$1，單筆最高折抵訂單金額 50%
+    use_points: int = Field(default=0, ge=0)
 
 
 class DineInOrderItemOut(BaseModel):
@@ -31,6 +33,8 @@ class DineInOrderOut(BaseModel):
     table_number: str
     status: str
     total_amount: float
+    points_used: int = 0
+    points_discount: float = 0
     created_at: datetime
     items: List[DineInOrderItemOut]
 

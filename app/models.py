@@ -41,6 +41,9 @@ class User(Base):
     # 要開通店員帳號得直接去 DB 手動改這個欄位（比照 SearchSuggestion/Promotion
     # 後台手動維護的慣例）
     role = Column(String, nullable=False, server_default="customer")
+    # 紅利點數餘額——權威資料，異動一律走原子性 UPDATE（比照 Product.stock），
+    # 不可為負；效期／明細記錄在 LoyaltyTransaction
+    loyalty_balance = Column(Integer, nullable=False, server_default="0")
 
     # 建立與 PushToken 的關聯
     push_tokens = relationship(
@@ -66,6 +69,10 @@ class User(Base):
     # 到店自助點餐（跟網購 orders 是分開的兩個流程）
     dine_in_orders = relationship(
         "DineInOrder", back_populates="user", cascade="all, delete-orphan"
+    )
+    # 紅利點數明細帳本（賺取/折抵/過期紀錄）
+    loyalty_transactions = relationship(
+        "LoyaltyTransaction", back_populates="user", cascade="all, delete-orphan"
     )
 
 
@@ -183,6 +190,10 @@ class Order(Base):
     merchant_trade_no = Column(String, unique=True, index=True, nullable=False)
     # 金流那邊的交易編號（ECPay 回調的 TradeNo），付款成功前為 None
     payment_reference = Column(String, nullable=True)
+    # 這筆訂單折抵用掉的點數／折抵金額，0 代表沒有使用點數；
+    # total_amount 已經是扣除折抵後、實際要付款的金額
+    points_used = Column(Integer, nullable=False, server_default="0")
+    points_discount = Column(Numeric(10, 2), nullable=False, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     paid_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -251,6 +262,9 @@ class DineInOrder(Base):
     # 跟網購 Order.status 的付款狀態語意不同，故分開兩張表，不共用同一個 status 欄位
     status = Column(String, nullable=False, default="pending")
     total_amount = Column(Numeric(10, 2), nullable=False)
+    # 這筆訂單折抵用掉的點數／折抵金額，做法比照 Order（0 代表沒有使用點數）
+    points_used = Column(Integer, nullable=False, server_default="0")
+    points_discount = Column(Numeric(10, 2), nullable=False, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="dine_in_orders")
@@ -284,6 +298,28 @@ class Table(Base):
     # unique 避免同一家店建立重複桌號
     code = Column(String, unique=True, index=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class LoyaltyTransaction(Base):
+    __tablename__ = "loyalty_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    # earn（賺取）/ redeem（折抵）/ expire（過期收回）/ reverse（訂單取消退款收回或退還）
+    type = Column(String, nullable=False)
+    amount = Column(Integer, nullable=False)  # 正整數，異動方向由 type 決定
+    # 只有 type="earn" 的列會用到：初始等於 amount，之後被 redeem 依到期日 FIFO
+    # 消耗時遞減；到期排程只需要收走還沒被消耗掉的部分，不用重算整包歷史
+    remaining_amount = Column(Integer, nullable=False, default=0)
+    expires_at = Column(DateTime(timezone=True), nullable=True)  # 只有 type="earn" 會設值
+    reason = Column(String, nullable=False)  # 人類可讀說明，例如「消費回饋：訂單 #123」
+    related_order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
+    related_dine_in_order_id = Column(
+        Integer, ForeignKey("dine_in_orders.id"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="loyalty_transactions")
 
 
 class MagicLinkToken(Base):

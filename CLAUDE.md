@@ -118,6 +118,27 @@ alembic upgrade head
   3. `app/api/v1/endpoints/tables.py` 三支端點——依賴從 `get_current_user` 改成 `get_current_staff_user`。
   4. `POST /api/v1/coupons/admin/issue`——`dependencies` 從單純 `verify_admin_key` 改成 `verify_admin_or_staff`，`X-Admin-Key`（老闆／營運用 Postman 手動發券）跟 `role="staff"` JWT（店員 App 登入後用自己帳號發券）兩條路都保留，staff session 那邊確認需要雙軌並存，不能只留其中一種。
 
+**產品／菜單店員後台 CRUD（2026-09 由 staff session 提出「產品資料維護」需求，已上線）：** 店員可編輯 `Product`（網購商品）／`MenuItem`（堂食菜單）的庫存、單價、上下架，也能新增品項；因為兩者原本的設計就不同（`Product` 有 `stock`、`MenuItem` 沒有，見上方堂食點餐一節），刻意做成兩組獨立、對稱的 CRUD，不共用 schema。**規格是跟 staff session 在 2026-09-07 來回確認定案的**：一開始問錯資源（誤以為要補庫存的是 `MenuItem`，經使用者澄清「餐點不需要數量，但商品要有數量」後改問 `Product`），並用一組專用測試帳號（role 手動改成 `staff`）實際跑過端到端測試才上線，過程中也確認了 `description`／`thumbnail` 維持必填（沒有改成 optional）。
+
+- **Product（`app/api/v1/endpoints/products.py`）：**
+  - `GET /api/v1/products/admin`（可加 `?category=`）——回傳全部商品（含下架），回應 schema `ProductAdminOut`（`app/schemas/product.py`，比公開用的 `ProductOut` 多回傳 `stock`／`is_active`／`created_at`／`updated_at`）。**路由順序有坑：`/admin` 必須註冊在 `/{product_id}` 之前**，不然 `"admin"` 會先被 `/{product_id}`（型別是 int）那條路由吃掉、轉型失敗變成 422，而不是真的進到 `/admin`。
+  - `POST /api/v1/products`——新增商品，`ProductCreate`：`title`／`description`／`category`／`thumbnail` 皆為必填（不接受留空）。
+  - `PATCH /api/v1/products/{id}`——`ProductUpdate` 全欄位皆為 Optional。`price`／`title`／`is_active` 等是絕對覆蓋（last-write-wins）；**唯獨 `stock_delta` 是相對增減**（店員這次補貨/校正的數量差），用原子性 `UPDATE products SET stock = stock + :delta WHERE stock + :delta >= 0` 套用，不用先 SELECT 再寫回，避免多店員同時補貨互相蓋掉，也避免扣成負庫存（扣成負的回 409）。**沒有獨立的刪除端點**，用 `PATCH {"is_active": false}` 軟刪除，保留 `OrderItem.product_id`／`Favorite.product_id` 參照完整性，跟顧客端既有慣例一致。
+- **MenuItem（`app/api/v1/endpoints/menu_items.py`）：** `GET /api/v1/menu-items/admin`、`POST /api/v1/menu-items`、`PATCH /api/v1/menu-items/{id}`，結構跟 Product 對稱，同樣要注意 `/admin` 路由順序。因為 `MenuItem` 本來就沒有 `stock` 概念，`MenuItemUpdate` 全欄位都是絕對覆蓋，**沒有 `stock_delta`**；刪除同樣用 `PATCH {"is_available": false}` 軟刪除。
+- 兩組端點皆需 `role="staff"`（`deps.get_current_staff_user`）；`price` 驗證用 Pydantic `condecimal(gt=0, decimal_places=2)`，不可為 0/負數；並發策略是「補貨用原子相對增減、其餘欄位 last-write-wins」，跟專案目前沒有樂觀鎖機制的慣例一致（不要為了這批端點另外引入 version 欄位）。
+
+**紅利點數（2026-09 由前端 mynotification 提出，核心機制已上線）：** 跟 front-end session 對過設計方向後實作，`app/services/loyalty_service.py` 是核心邏輯（`earn_points`／`redeem_points`／`calc_earned_points`／`calc_max_redeemable_points`，皆不自行 commit，交易邊界由呼叫端控制），`app/api/v1/endpoints/loyalty.py` 是查詢端點。
+
+- **`User.loyalty_balance`**（Integer，`server_default="0"`）——權威餘額，所有異動都用原子性 `UPDATE users SET loyalty_balance = loyalty_balance + :delta WHERE loyalty_balance + :delta >= 0` 套用（比照 `Product.stock`），不先 SELECT 再寫回。
+- **`LoyaltyTransaction`**（`app/models.py`，明細帳本）：`type`（`earn`/`redeem`/`expire`/`reverse`）、`amount`、`remaining_amount`（只有 `earn` 列會用到，初始等於 `amount`，之後被 `redeem` 依 `expires_at` 由舊到新 FIFO 扣減，讓到期排程只需要收走還沒被消耗掉的餘額）、`expires_at`（只有 `earn` 列有值，入帳日 +365 天）、`reason`、`related_order_id`／`related_dine_in_order_id`（皆 nullable FK）。**`reverse` 型別目前沒有任何程式碼會寫入**——`Order`／`DineInOrder` 都還沒有取消端點，回收/退還邏輯還沒有觸發點可以掛，之後有取消流程時才需要真的實作。
+- **賺點（`earn_points`）觸發點：** 目前**只有**堂食訂單掛在 `PATCH /api/v1/dine-in-orders/{id}/status` 把 `DineInOrder.status` 改成 `"completed"` 的那一刻（`app/api/v1/endpoints/dine_in_orders.py` 的 `update_dine_in_order_status`），依 `order.total_amount`（已扣點數折抵後的實付金額）換算，用 `order.status != "completed"` 判斷「這次是不是第一次被標記完成」防止店員重複點擊而重複發點。**網購訂單（`Order.status` 變成 `"paid"`）這條觸發點還沒接**，因為 ECPay 還沒串（見上方「尚未完成」一節），等 callback 接上時要記得在那裡呼叫 `loyalty_service.earn_points`。會員禮遇（註冊禮／生日禮）也**還沒實作**，前端那邊細節還在跟他們的使用者確認金額，先不動工。
+- **折抵（`redeem_points`）：** `POST /orders`／`POST /dine-in-orders` body 都新增了可選欄位 `use_points`（`OrderCreate`/`DineInOrderCreate`）。流程是先照原本邏輯算出商品小計 `subtotal`，驗證 `use_points` 沒超過 `calc_max_redeemable_points(subtotal)`（訂單小計 50%，超過回 `400`），通過後 `order.total_amount = subtotal - points_discount`，訂單物件 `flush()` 拿到 id 後才呼叫 `redeem_points`（要有 `related_order_id`/`related_dine_in_order_id` 才能把明細掛勾回訂單）；`redeem_points` 若因餘額不足失敗（回傳 `False`）就 `rollback` 整張訂單並回 `409`。跟現有「庫存不足就整單 rollback」是同一種 all-or-nothing 精神，不會有「點數扣了但訂單沒成立」的情況。訂單 `total_amount` 是實付金額（已扣點數），`points_used`／`points_discount` 兩個新欄位（`Order`/`DineInOrder` 皆有，`server_default="0"`）另外記錄這筆訂單用了多少點/折了多少錢，回應 schema（`OrderOut`/`DineInOrderOut`）都有回傳。
+- **點數不足／超過折抵上限的錯誤格式（跟前端對過的契約，不能用文字比對判斷）：** 商品庫存不足維持原樣不變（`409`，`detail` 是純文字字串）；**點數餘額不足**是 `409` + `detail` 為物件 `{"error_code": "insufficient_points", "message": "..."}`；**超過折抵上限**是 `400` + 同樣帶 `error_code: "points_cap_exceeded"` 的物件。前端判斷邏輯：`detail` 是字串→既有庫存錯誤；是物件→看 `error_code` 分流。
+- **到期排程：** `app/services/scheduler_service.py` 的 `expire_loyalty_points_task`（比照既有 `BackgroundScheduler` 模式，`start_scheduler()` 裡註冊成每日凌晨 1 點的 cron job）——掃出 `type="earn" AND remaining_amount > 0 AND expires_at <= now()` 的列，用 `func.greatest(User.loyalty_balance - amount, 0)` 收回餘額（防止意外變負），該列 `remaining_amount` 歸零，並各補一筆 `type="expire"` 紀錄。
+- **常數（純程式碼常數，寫在 `loyalty_service.py`，不是後台可調設定，要調整比例直接改常數即可，不涉及 schema/migration）：** 消費 NT$100 得 1 點（無條件捨去）；折抵 1 點 = NT$1；單筆訂單最高折抵訂單金額 50%；賺點效期 365 天。
+- **`GET /api/v1/loyalty/me`**（需登入）→ `{ balance: number }`；**`GET /api/v1/loyalty/transactions`**（需登入）→ 目前使用者的點數明細，新到舊排序。
+- 實作前已用本機 uvicorn 對同一個 Supabase DB（沒有獨立測試資料庫）跑過端到端驗證：賺點換算、折抵扣點/改總額、超過上限 400、餘額不足 409、重複標記完成不會重複發點，皆符合預期。
+
 **Model 結構補充：** `User` 對 `Order`、`Favorite`、`DineInOrder` 皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多；`MenuItem` 對 `DineInOrderItem` 為一對多。
 
 ## 專案慣例

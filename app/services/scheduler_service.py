@@ -1,13 +1,13 @@
 import asyncio
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy import extract, select
+from sqlalchemy import extract, func, select, update
 
 from app.core.config import settings
 from app.database_async import AsyncSessionLocal  #
-from app.models import Coupon, User  #
+from app.models import Coupon, LoyaltyTransaction, User  #
 from app.services.push_service import send_user_push_notifications
 
 
@@ -115,6 +115,60 @@ async def self_ping_task():
         print(f"[{datetime.now()}] 保活 ping 失敗 ({url}): {e}")
 
 
+async def expire_loyalty_points_task():
+    """
+    點數到期排程：掃出所有已過期、還沒被折抵消耗完的 earn 紀錄（remaining_amount > 0
+    且 expires_at 已過），把剩餘未消耗的部分收回（扣減 User.loyalty_balance、該筆
+    remaining_amount 歸零），並各補一筆 type="expire" 的紀錄方便使用者對帳。
+    """
+    now = datetime.now(UTC)
+    expired_count = 0
+
+    async with AsyncSessionLocal() as db:
+        try:
+            query = select(LoyaltyTransaction).where(
+                LoyaltyTransaction.type == "earn",
+                LoyaltyTransaction.remaining_amount > 0,
+                LoyaltyTransaction.expires_at <= now,
+            )
+            result = await db.execute(query)
+            expired_txns = result.scalars().all()
+
+            for txn in expired_txns:
+                amount = txn.remaining_amount
+                txn.remaining_amount = 0
+                await db.execute(
+                    update(User)
+                    .where(User.id == txn.user_id)
+                    .values(
+                        loyalty_balance=func.greatest(User.loyalty_balance - amount, 0)
+                    )
+                )
+                db.add(
+                    LoyaltyTransaction(
+                        user_id=txn.user_id,
+                        type="expire",
+                        amount=amount,
+                        reason=f"點數過期（原賺點紀錄 #{txn.id}）",
+                    )
+                )
+                expired_count += 1
+
+            await db.commit()
+            print(f"[{datetime.now()}] 點數到期排程完成，共收回 {expired_count} 筆賺點紀錄")
+        except Exception as e:
+            await db.rollback()
+            print(f"點數到期排程執行失敗: {e}")
+
+
+def run_loyalty_expiry_bridge():
+    """橋接 BackgroundScheduler (同步) 與 expire_loyalty_points_task"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(expire_loyalty_points_task())
+    loop.close()
+
+
 def run_self_ping_bridge():
     """橋接 BackgroundScheduler (同步) 與 self_ping_task"""
     loop = asyncio.new_event_loop()
@@ -139,6 +193,12 @@ def start_scheduler():
     # （14 分鐘），讓服務在有人使用的期間不會冷啟動，又不會完全 24 小時佔滿額度
     scheduler.add_job(run_self_ping_bridge, "interval", minutes=14)
 
+    # 4. 紅利點數到期排程：每天凌晨 1 點收回已過期、還沒被折抵消耗完的點數
+    scheduler.add_job(run_loyalty_expiry_bridge, "cron", hour=1, minute=0)
+
     # 啟動排程器
     scheduler.start()
-    print("APScheduler 已啟動：正式任務 (每月25日)、保活任務 (每14分鐘) 運行中...")
+    print(
+        "APScheduler 已啟動：正式任務 (每月25日)、保活任務 (每14分鐘)、"
+        "點數到期排程 (每日01:00) 運行中..."
+    )

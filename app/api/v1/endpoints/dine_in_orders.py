@@ -17,6 +17,7 @@ from app.schemas.dine_in_order import (
     DineInOrderOut,
     DineInOrderStatusUpdate,
 )
+from app.services import loyalty_service
 from app.services.push_service import send_role_push_notifications
 
 router = APIRouter()
@@ -32,6 +33,8 @@ def _to_order_out(order: DineInOrder) -> DineInOrderOut:
         table_number=order.table_number,
         status=order.status,
         total_amount=float(order.total_amount),
+        points_used=order.points_used,
+        points_discount=float(order.points_discount),
         created_at=order.created_at,
         items=[
             DineInOrderItemOut(
@@ -57,6 +60,8 @@ async def create_dine_in_order(
     建立堂食點餐訂單。跟網購 /orders 是分開的流程：這裡沒有庫存概念（賣完由店員
     手動關閉 is_available），所以不需要原子性扣庫存，但價格一律以資料庫當下的值
     為準，不採信前端顯示的金額；桌號是前端自由文字輸入，後端不做格式驗證或查詢。
+    可選的 use_points 用來折抵訂單金額，規則跟 /orders 相同（1 點 = NT$1，上限訂單
+    小計 50%），驗證/扣點都跟建立訂單包在同一個 transaction。
     """
     # 同一品項在同一次點餐中出現多次時先合併數量
     quantities: dict[int, int] = {}
@@ -80,26 +85,42 @@ async def create_dine_in_order(
         )
 
     order_items: List[DineInOrderItem] = []
-    total_amount = Decimal("0")
+    subtotal = Decimal("0")
     for menu_item_id, quantity in quantities.items():
         menu_item = menu_items[menu_item_id]
-        subtotal = menu_item.price * quantity
-        total_amount += subtotal
+        item_subtotal = menu_item.price * quantity
+        subtotal += item_subtotal
         order_items.append(
             DineInOrderItem(
                 menu_item_id=menu_item_id,
                 quantity=quantity,
                 unit_price=menu_item.price,
-                subtotal=subtotal,
+                subtotal=item_subtotal,
             )
         )
+
+    points_used = payload.use_points
+    points_discount = Decimal("0")
+    if points_used > 0:
+        max_points = loyalty_service.calc_max_redeemable_points(subtotal)
+        if points_used > max_points:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "points_cap_exceeded",
+                    "message": f"超過訂單金額 50% 折抵上限，最多可用 {max_points} 點",
+                },
+            )
+        points_discount = Decimal(points_used) * loyalty_service.REDEEM_POINT_VALUE
 
     try:
         order = DineInOrder(
             user_id=current_user.id,
             table_number=payload.table_number,
             status="pending",
-            total_amount=total_amount,
+            total_amount=subtotal - points_discount,
+            points_used=points_used,
+            points_discount=points_discount,
         )
         order.items = order_items
         db.add(order)
@@ -108,7 +129,28 @@ async def create_dine_in_order(
         # 非同步重新查詢（MissingGreenlet），所以要在 commit 前存成區域變數
         await db.flush()
         order_id = order.id
+
+        if points_used > 0:
+            redeemed = await loyalty_service.redeem_points(
+                db,
+                current_user.id,
+                points_used,
+                reason=f"折抵：堂食訂單 #{order_id}",
+                related_dine_in_order_id=order_id,
+            )
+            if not redeemed:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_code": "insufficient_points",
+                        "message": "點數餘額不足",
+                    },
+                )
+
         await db.commit()
+    except HTTPException:
+        raise
     except Exception as e:
         await db.rollback()
         print(f"DEBUG: 建立堂食訂單失敗: {e}")
@@ -181,7 +223,11 @@ async def update_dine_in_order_status(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(deps.get_current_staff_user),
 ):
-    """店員標記訂單已完成／已出餐，只有 role="staff" 能呼叫。"""
+    """
+    店員標記訂單已完成／已出餐，只有 role="staff" 能呼叫。標記為 completed 時，
+    順便依訂單實付金額（total_amount，已扣點數折抵）發放消費回饋點數——用
+    order.status 是否已經是 completed 判斷，避免同一張單重複點擊而重複發點。
+    """
     query = (
         select(DineInOrder)
         .where(DineInOrder.id == dine_in_order_id)
@@ -193,7 +239,17 @@ async def update_dine_in_order_status(
         raise HTTPException(status_code=404, detail="訂單不存在")
 
     try:
+        newly_completed = payload.status == "completed" and order.status != "completed"
         order.status = payload.status
+        if newly_completed:
+            earned = loyalty_service.calc_earned_points(order.total_amount)
+            await loyalty_service.earn_points(
+                db,
+                order.user_id,
+                earned,
+                reason=f"消費回饋：堂食訂單 #{order.id}",
+                related_dine_in_order_id=order.id,
+            )
         await db.commit()
     except Exception as e:
         await db.rollback()

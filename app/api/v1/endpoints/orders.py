@@ -14,6 +14,7 @@ from app.database_async import get_db
 from app.models import Order, OrderItem
 from app.models import Product as ProductModel
 from app.schemas.order import OrderCreate, OrderItemOut, OrderOut
+from app.services import loyalty_service
 
 router = APIRouter()
 
@@ -34,6 +35,8 @@ def _to_order_out(order: Order) -> OrderOut:
         id=order.id,
         status=order.status,
         total_amount=float(order.total_amount),
+        points_used=order.points_used,
+        points_discount=float(order.points_discount),
         payment_provider=order.payment_provider,
         merchant_trade_no=order.merchant_trade_no,
         created_at=order.created_at,
@@ -77,11 +80,14 @@ async def create_order(
     """
     建立訂單。price/stock 一律以後端這次重新查到的資料為準，不採信前端傳入的金額；
     庫存用「UPDATE ... WHERE stock >= 數量」原子性扣減，任一項商品庫存不足就整張訂單失敗
-    （已扣的其他項目一併 rollback，不會賣出部分商品卻沒建立訂單）。
+    （已扣的其他項目一併 rollback，不會賣出部分商品卻沒建立訂單）。可選的 use_points
+    用來折抵訂單金額（1 點 = NT$1，上限訂單小計 50%），驗證/扣點都跟建立訂單包在
+    同一個 transaction，任一步失敗就整單 rollback（詳見 loyalty_service）。
 
     注意：金流（綠界 ECPay）串接尚未完成——這裡只建立 pending 狀態的訂單並扣庫存，
     之後要補上呼叫 ECPay Checkout 頁面、以及付款完成 callback 驗簽、更新
-    status/payment_reference/paid_at 的步驟。
+    status/payment_reference/paid_at 的步驟；消費回饋點數（earn）也要等那個時候
+    才會真的觸發（見 loyalty_service.calc_earned_points）。
     """
     # 同一商品在同一次下單中出現多次時先合併數量，避免重複扣庫存判斷失準
     quantities: dict[int, int] = {}
@@ -91,7 +97,7 @@ async def create_order(
         )
 
     order_items: List[OrderItem] = []
-    total_amount = Decimal("0")
+    subtotal = Decimal("0")
 
     try:
         for product_id, quantity in quantities.items():
@@ -111,21 +117,38 @@ async def create_order(
                     status_code=409, detail=f"商品 {product_id} 庫存不足或已下架"
                 )
             (price,) = row
-            subtotal = price * quantity
-            total_amount += subtotal
+            item_subtotal = price * quantity
+            subtotal += item_subtotal
             order_items.append(
                 OrderItem(
                     product_id=product_id,
                     quantity=quantity,
                     unit_price=price,
-                    subtotal=subtotal,
+                    subtotal=item_subtotal,
                 )
             )
+
+        points_used = payload.use_points
+        points_discount = Decimal("0")
+        if points_used > 0:
+            max_points = loyalty_service.calc_max_redeemable_points(subtotal)
+            if points_used > max_points:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error_code": "points_cap_exceeded",
+                        "message": f"超過訂單金額 50% 折抵上限，最多可用 {max_points} 點",
+                    },
+                )
+            points_discount = Decimal(points_used) * loyalty_service.REDEEM_POINT_VALUE
 
         order = Order(
             user_id=current_user.id,
             status="pending",
-            total_amount=total_amount,
+            total_amount=subtotal - points_discount,
+            points_used=points_used,
+            points_discount=points_discount,
             payment_provider="ecpay",
             merchant_trade_no=_generate_merchant_trade_no(),
         )
@@ -136,6 +159,25 @@ async def create_order(
         # 非同步重新查詢（MissingGreenlet），所以要在 commit 前存成區域變數
         await db.flush()
         order_id = order.id
+
+        if points_used > 0:
+            redeemed = await loyalty_service.redeem_points(
+                db,
+                current_user.id,
+                points_used,
+                reason=f"折抵：訂單 #{order_id}",
+                related_order_id=order_id,
+            )
+            if not redeemed:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_code": "insufficient_points",
+                        "message": "點數餘額不足",
+                    },
+                )
+
         await db.commit()
     except HTTPException:
         raise
