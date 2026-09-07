@@ -35,6 +35,7 @@ class DineInOrderOut(BaseModel):
     total_amount: float
     points_used: int = 0
     points_discount: float = 0
+    points_earned: int = 0
     created_at: datetime
     items: List[DineInOrderItemOut]
 

@@ -31,12 +31,20 @@ def _generate_merchant_trade_no() -> str:
 
 
 def _to_order_out(order: Order) -> OrderOut:
+    # points_earned 是算出來的（不是存在 DB 的欄位）：等 ECPay 串好、
+    # status 真的會變成 paid 之後這裡才會回傳非 0 的值，目前恆為 0
+    points_earned = (
+        loyalty_service.calc_earned_points(order.total_amount)
+        if order.status == "paid"
+        else 0
+    )
     return OrderOut(
         id=order.id,
         status=order.status,
         total_amount=float(order.total_amount),
         points_used=order.points_used,
         points_discount=float(order.points_discount),
+        points_earned=points_earned,
         payment_provider=order.payment_provider,
         merchant_trade_no=order.merchant_trade_no,
         created_at=order.created_at,

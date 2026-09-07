@@ -28,6 +28,14 @@ DINE_IN_ORDER_LOAD_OPTIONS = selectinload(DineInOrder.items).selectinload(
 
 
 def _to_order_out(order: DineInOrder) -> DineInOrderOut:
+    # points_earned 是算出來的（不是存在 DB 的欄位），跟實際發點邏輯
+    # （update_dine_in_order_status）用同一個判斷條件、同一個換算函式，
+    # 確保這裡顯示的數字跟 LoyaltyTransaction 裡真正入帳的數字一致
+    points_earned = (
+        loyalty_service.calc_earned_points(order.total_amount)
+        if order.status == "completed"
+        else 0
+    )
     return DineInOrderOut(
         id=order.id,
         table_number=order.table_number,
@@ -35,6 +43,7 @@ def _to_order_out(order: DineInOrder) -> DineInOrderOut:
         total_amount=float(order.total_amount),
         points_used=order.points_used,
         points_discount=float(order.points_discount),
+        points_earned=points_earned,
         created_at=order.created_at,
         items=[
             DineInOrderItemOut(

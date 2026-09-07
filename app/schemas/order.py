@@ -34,6 +34,7 @@ class OrderOut(BaseModel):
     total_amount: float
     points_used: int = 0
     points_discount: float = 0
+    points_earned: int = 0
     payment_provider: str
     merchant_trade_no: str
     created_at: datetime
