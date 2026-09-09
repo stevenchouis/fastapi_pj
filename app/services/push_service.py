@@ -64,6 +64,50 @@ async def send_user_push_notifications(
     await _publish_to_tokens(token_list, title, body, data)
 
 
+async def send_favorite_users_notifications(
+    db_factory,
+    product_id: int,
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+):
+    """
+    推播給收藏了某商品的所有使用者（用於商品到貨/降價通知）。
+    每個收藏者各留一筆 NotificationLog，讓他們自己 App 內的通知歷史看得到。
+    """
+    async with db_factory() as db:
+        result = await db.execute(
+            select(models.Favorite.user_id).where(
+                models.Favorite.product_id == product_id
+            )
+        )
+        user_ids = [row[0] for row in result.all()]
+        if not user_ids:
+            await db.commit()
+            logger.info(f"product_id={product_id} 沒有收藏者，略過推播")
+            return
+
+        for user_id in user_ids:
+            db.add(
+                models.NotificationLog(
+                    user_id=user_id, title=title, body=body, data=data
+                )
+            )
+        token_result = await db.execute(
+            select(models.PushToken.token).where(
+                models.PushToken.user_id.in_(user_ids)
+            )
+        )
+        token_list = [row[0] for row in token_result.all()]
+        await db.commit()
+
+    if not token_list:
+        logger.info(f"product_id={product_id} 的收藏者都沒有可用 Token")
+        return
+
+    await _publish_to_tokens(token_list, title, body, data)
+
+
 async def send_role_push_notifications(
     db_factory,
     role: str,

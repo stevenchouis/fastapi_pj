@@ -1,12 +1,12 @@
 # app/api/v1/endpoints/products.py
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
-from app.database_async import get_db
+from app.database_async import AsyncSessionLocal, get_db
 from app.models import Product
 from app.schemas.product import (
     ProductAdminOut,
@@ -14,6 +14,7 @@ from app.schemas.product import (
     ProductOut,
     ProductUpdate,
 )
+from app.services.push_service import send_favorite_users_notifications
 
 router = APIRouter()
 
@@ -90,18 +91,24 @@ async def create_product(
 async def update_product(
     product_id: int,
     payload: ProductUpdate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(deps.get_current_staff_user),
 ):
     """
     店員編輯商品。price/is_active/title 等欄位為絕對覆蓋（last-write-wins）；
     stock_delta（如有帶）用原子性 UPDATE 套用相對增減，避免多店員同時補貨互相蓋掉，
-    也避免扣成負庫存（此時回 409）。
+    也避免扣成負庫存（此時回 409）。若這次異動讓商品「從缺貨變有庫存」或「降價」，
+    會背景推播通知有收藏（`Favorite`）這個商品的使用者（比照 `send_role_push_notifications`
+    另開 `send_favorite_users_notifications`，見 push_service.py）。
     """
     result = await db.execute(select(Product).where(Product.id == product_id))
     product = result.scalars().first()
     if not product:
         raise HTTPException(status_code=404, detail="商品不存在")
+
+    old_price = product.price
+    old_stock = product.stock
 
     data = payload.model_dump(exclude_unset=True)
     stock_delta = data.pop("stock_delta", None)
@@ -130,4 +137,35 @@ async def update_product(
         raise HTTPException(status_code=500, detail="更新商品失敗")
 
     result = await db.execute(select(Product).where(Product.id == product_id))
-    return result.scalars().first()
+    product = result.scalars().first()
+
+    # 到貨/降價通知：比對異動前後的值才觸發（不是「有沒有帶這個欄位」），
+    # 避免同一個值 PATCH 兩次被誤判成「又到貨了」；商品已下架就不通知
+    if product.is_active and old_stock == 0 and product.stock > 0:
+        background_tasks.add_task(
+            send_favorite_users_notifications,
+            AsyncSessionLocal,
+            product_id,
+            "🎉 到貨通知",
+            f"您收藏的「{product.title}」已經到貨了！",
+            {
+                "type": "product_restock",
+                "screen": "ProductDetail",
+                "product_id": product_id,
+            },
+        )
+    if product.is_active and product.price < old_price:
+        background_tasks.add_task(
+            send_favorite_users_notifications,
+            AsyncSessionLocal,
+            product_id,
+            "💰 降價通知",
+            f"您收藏的「{product.title}」降價了，現在只要 NT${product.price}！",
+            {
+                "type": "product_price_drop",
+                "screen": "ProductDetail",
+                "product_id": product_id,
+            },
+        )
+
+    return product

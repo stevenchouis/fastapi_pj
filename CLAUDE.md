@@ -141,6 +141,8 @@ alembic upgrade head
 - **`GET /api/v1/loyalty/me`**（需登入）→ `{ balance: number }`；**`GET /api/v1/loyalty/transactions`**（需登入）→ 目前使用者的點數明細，新到舊排序。
 - 實作前已用本機 uvicorn 對同一個 Supabase DB（沒有獨立測試資料庫）跑過端到端驗證：賺點換算、折抵扣點/改總額、超過上限 400、餘額不足 409、重複標記完成不會重複發點，皆符合預期。
 
+**收藏商品到貨／降價通知（2026-09 由前端 mynotification 提出，已上線）：** 觸發點掛在店員後台的 `PATCH /api/v1/products/{id}`（`app/api/v1/endpoints/products.py` 的 `update_product`）——比對這次異動前後的 `stock`／`price`（不是「有沒有帶這個欄位」，避免同一個值 PATCH 兩次被誤判觸發），`old_stock == 0 and new_stock > 0` 判定到貨、`new_price < old_price` 判定降價，商品 `is_active=False`（已下架）不通知；只通知有收藏（`Favorite`）該商品的使用者，不做全站廣播。**沒有新增任何 schema/欄位**——沿用 `NotificationLog.data` 這個既有的通用 JSON 欄位裝深層連結參數（跟範例任務通知、堂食新訂單通知店員、生日禮券通知是同一套機制），推播 `data` payload 格式是 `{"type": "product_restock" | "product_price_drop", "screen": "ProductDetail", "product_id": <id>}`，這是跟前端逐欄位對過的契約，不能隨意改動大小寫/欄位名。實作是 `app/services/push_service.py` 新增的 `send_favorite_users_notifications`（比照既有 `send_role_push_notifications` 的寫法，只是把「篩 `role`」換成「篩 `Favorite.product_id`」），用 `BackgroundTasks` 觸發，不佔用 `PATCH` 的回應時間。已用本機 uvicorn 對同一個 Supabase DB 跑過端到端驗證：到貨/降價各自正確產生 `NotificationLog`、payload 格式正確、漲價不誤觸發。
+
 **Model 結構補充：** `User` 對 `Order`、`Favorite`、`DineInOrder` 皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多；`MenuItem` 對 `DineInOrderItem` 為一對多。
 
 ## 專案慣例
