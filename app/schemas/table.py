@@ -1,5 +1,6 @@
 # app/schemas/table.py
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -11,6 +12,7 @@ class TableCreate(BaseModel):
 class TableOut(BaseModel):
     id: int
     code: str
+    restaurant_id: Optional[int] = None
     created_at: datetime
 
     class Config:

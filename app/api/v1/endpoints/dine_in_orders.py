@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.database_async import AsyncSessionLocal, get_db
-from app.models import DineInOrder, DineInOrderItem
+from app.models import DineInOrder, DineInOrderItem, Table
 from app.models import MenuItem as MenuItemModel
 from app.schemas.dine_in_order import (
     DineInOrderCreate,
@@ -39,6 +39,8 @@ def _to_order_out(order: DineInOrder) -> DineInOrderOut:
     return DineInOrderOut(
         id=order.id,
         table_number=order.table_number,
+        table_id=order.table_id,
+        restaurant_id=order.restaurant_id,
         status=order.status,
         total_amount=float(order.total_amount),
         points_used=order.points_used,
@@ -68,10 +70,26 @@ async def create_dine_in_order(
     """
     建立堂食點餐訂單。跟網購 /orders 是分開的流程：這裡沒有庫存概念（賣完由店員
     手動關閉 is_available），所以不需要原子性扣庫存，但價格一律以資料庫當下的值
-    為準，不採信前端顯示的金額；桌號是前端自由文字輸入，後端不做格式驗證或查詢。
-    可選的 use_points 用來折抵訂單金額，規則跟 /orders 相同（1 點 = NT$1，上限訂單
-    小計 50%），驗證/扣點都跟建立訂單包在同一個 transaction。
+    為準，不採信前端顯示的金額。可選的 use_points 用來折抵訂單金額，規則跟
+    /orders 相同（1 點 = NT$1，上限訂單小計 50%），驗證/扣點都跟建立訂單包在同一個
+    transaction。
+
+    桌號有兩種來源（見 DineInOrderCreate）：帶 table_id 時會反查 Table 拿到門市
+    （2026-09 多門市支援的新流程，顧客從清單選桌位）；只帶 table_number 時走舊版
+    自由文字輸入路徑，不驗證格式、table_id/restaurant_id 留空。
     """
+    table_number = payload.table_number
+    restaurant_id = None
+    if payload.table_id is not None:
+        table_result = await db.execute(
+            select(Table).where(Table.id == payload.table_id)
+        )
+        table = table_result.scalars().first()
+        if not table:
+            raise HTTPException(status_code=404, detail="桌位不存在")
+        table_number = table.code
+        restaurant_id = table.restaurant_id
+
     # 同一品項在同一次點餐中出現多次時先合併數量
     quantities: dict[int, int] = {}
     for item in payload.items:
@@ -125,7 +143,9 @@ async def create_dine_in_order(
     try:
         order = DineInOrder(
             user_id=current_user.id,
-            table_number=payload.table_number,
+            table_number=table_number,
+            table_id=payload.table_id,
+            restaurant_id=restaurant_id,
             status="pending",
             total_amount=subtotal - points_discount,
             points_used=points_used,
@@ -183,6 +203,7 @@ async def create_dine_in_order(
         "🍽️ 新的堂食訂單",
         f"桌號 {order.table_number} 送出新訂單",
         {"screen": "DineInOrders", "dine_in_order_id": order_id},
+        order.restaurant_id,
     )
 
     return _to_order_out(order)
@@ -213,11 +234,18 @@ async def list_dine_in_orders(
 ):
     """
     店員接單列表，只有 role="staff" 能呼叫。預設只列 pending 狀態，
-    依 created_at 舊到新排序（FIFO，先送的單先出餐）。
+    依 created_at 舊到新排序（FIFO，先送的單先出餐）。自動依登入店員的
+    User.restaurant_id 篩選，不接受前端傳門市參數（見 tables.py 同樣的
+    多門市 scoping 慣例）。
     """
+    if current_user.restaurant_id is None:
+        raise HTTPException(status_code=400, detail="帳號尚未指定所屬門市")
     query = (
         select(DineInOrder)
-        .where(DineInOrder.status == status)
+        .where(
+            DineInOrder.status == status,
+            DineInOrder.restaurant_id == current_user.restaurant_id,
+        )
         .options(DINE_IN_ORDER_LOAD_OPTIONS)
         .order_by(DineInOrder.created_at.asc())
     )

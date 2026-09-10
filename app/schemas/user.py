@@ -28,6 +28,9 @@ class User(UserBase):
     avatar_url: str | None = None
     birthday: date | None = None  # 新增生日欄位
     role: str = "customer"  # 'customer' / 'staff'，App 端登入後呼叫 GET /me 用這個判斷能不能核銷
+    # 2026-09 多門市支援：僅 role="staff" 有意義，店員 App 登入後用這個知道
+    # 自己屬於哪間門市（畫面唯讀顯示，不需要門市選擇器）
+    restaurant_id: int | None = None
 
     class Config:
         from_attributes = True  # 允許 Pydantic 讀取 SQLAlchemy 模型

@@ -141,6 +141,7 @@ async def send_role_push_notifications(
     title: str,
     body: str,
     data: Optional[dict] = None,
+    restaurant_id: Optional[int] = None,
 ):
     """
     推播給某個角色、且該 token 屬於 app_id 這個 App 的所有使用者（目前用於堂食
@@ -148,9 +149,17 @@ async def send_role_push_notifications(
     帳號如果同時也裝了 mynotification（例如自己也是顧客），個人購物用的 App
     收到「有新訂單要備餐」這種跟它無關的推播。
     每個符合角色的使用者各留一筆 NotificationLog，讓他們自己 App 內的通知歷史看得到。
+
+    2026-09 多門市支援：restaurant_id 給定時只通知該門市的店員
+    （User.restaurant_id 相符），避免 A 門市的新訂單吵到 B 門市的店員；不給
+    （None）就維持舊行為，通知所有符合角色的使用者——訂單本身沒有門市資料時
+    （例如舊版前端還沒改用 table_id）沒辦法篩，寧可照舊全發也不要漏發。
     """
     async with db_factory() as db:
-        result = await db.execute(select(models.User.id).where(models.User.role == role))
+        query = select(models.User.id).where(models.User.role == role)
+        if restaurant_id is not None:
+            query = query.where(models.User.restaurant_id == restaurant_id)
+        result = await db.execute(query)
         user_ids = [row[0] for row in result.all()]
         if not user_ids:
             await db.commit()

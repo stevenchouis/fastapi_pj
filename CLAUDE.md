@@ -111,9 +111,8 @@ alembic upgrade head
 
 **桌位管理（2026-09 由 staff session 提出，已上線）：** 店員端 App（staff-scanner）原本把桌位清單存在裝置本機 AsyncStorage，導致不同店員裝置看到的桌位清單不同步，改成存 DB 讓所有店員裝置共用同一份。
 
-- **`Table` model**（`app/models.py`）：`code`（String，`unique=True`——桌號字串如 `"A3"`，store-scanner 端拿這個組 QR Code deep link）、`created_at`。**跟 `DineInOrder.table_number` 沒有 FK 關聯**——顧客端桌號是自由文字輸入不查表（見上方堂食點餐一節），`Table` 純粹是店員管理清單用，兩者故意脫鉤。
-- **`GET /api/v1/tables`**／**`POST /api/v1/tables`**（body `{"code": str}`，重複回 409）／**`DELETE /api/v1/tables/{id}`**（找不到回 404），皆定義在 `app/api/v1/endpoints/tables.py`，皆需 `role="staff"`（見下方 role 機制一節）。
-- 目前沒有多門市／租戶概念（`User`／`Product`／`MenuItem` 也都沒有），所以桌位清單是全域共用一份，刻意不加 `store_id` 卡位——真的要做多門市會是一次橫跨這幾張表的架構調整，不是現在能局部預留的。
+- **`Table` model**（`app/models.py`）：`code`（String——桌號字串如 `"A3"`，store-scanner 端拿這個組 QR Code deep link）、`restaurant_id`、`created_at`。**2026-09 多門市支援上線後，`code` 改成同一門市內 unique**（`UniqueConstraint("restaurant_id", "code")`），不再是全域 unique，詳見下方多門市一節。
+- **`GET /api/v1/tables`**／**`POST /api/v1/tables`**（body `{"code": str}`，同門市內重複回 409）／**`DELETE /api/v1/tables/{id}`**（找不到回 404），皆定義在 `app/api/v1/endpoints/tables.py`，皆需 `role="staff"`（見下方 role 機制一節），且皆自動依登入店員的 `User.restaurant_id` scope（見多門市一節），不接受前端傳門市參數。
 
 **角色機制／`User.role`（2026-09，已上線）：** 店員端 App（`staff` session 負責的 staff-scanner）跟顧客走同一套帳密登入，之前有好幾個功能都卡在「無法區分顧客／店員」這件事上，這次一次補齊：
 
@@ -151,6 +150,30 @@ alembic upgrade head
 - 實作前已用本機 uvicorn 對同一個 Supabase DB（沒有獨立測試資料庫）跑過端到端驗證：賺點換算、折抵扣點/改總額、超過上限 400、餘額不足 409、重複標記完成不會重複發點，皆符合預期。
 
 **收藏商品到貨／降價通知（2026-09 由前端 mynotification 提出，已上線）：** 觸發點掛在店員後台的 `PATCH /api/v1/products/{id}`（`app/api/v1/endpoints/products.py` 的 `update_product`）——比對這次異動前後的 `stock`／`price`（不是「有沒有帶這個欄位」，避免同一個值 PATCH 兩次被誤判觸發），`old_stock == 0 and new_stock > 0` 判定到貨、`new_price < old_price` 判定降價，商品 `is_active=False`（已下架）不通知；只通知有收藏（`Favorite`）該商品的使用者，不做全站廣播。**沒有新增任何 schema/欄位**——沿用 `NotificationLog.data` 這個既有的通用 JSON 欄位裝深層連結參數（跟範例任務通知、堂食新訂單通知店員、生日禮券通知是同一套機制），推播 `data` payload 格式是 `{"type": "product_restock" | "product_price_drop", "screen": "ProductDetail", "product_id": <id>}`，這是跟前端逐欄位對過的契約，不能隨意改動大小寫/欄位名。實作是 `app/services/push_service.py` 新增的 `send_favorite_users_notifications`（比照既有 `send_role_push_notifications` 的寫法，只是把「篩 `role`」換成「篩 `Favorite.product_id`」），用 `BackgroundTasks` 觸發，不佔用 `PATCH` 的回應時間。已用本機 uvicorn 對同一個 Supabase DB 跑過端到端驗證：到貨/降價各自正確產生 `NotificationLog`、payload 格式正確、漲價不誤觸發。
+
+**多門市支援（2026-09-10 由 mynotification 提出、跟 staff-scanner 三方對齊，Phase 1 後端已上線）：** 背景——堂食點餐（`Table`／`MenuItem`／`DineInOrder`）原本假設只有一間餐廳，桌號是顧客自由輸入、沒有防呆，也無法區分是哪間分店的桌子。三方確認的業務規則：
+
+- **範圍只涵蓋堂食點餐，網購商店（`Product`／`Order`）刻意不改**——業務確認網購是集中倉儲，不需要綁定門市。
+- **菜單是每間門市各自獨立**（不是連鎖共用同一份），所以 `MenuItem` 也要加 `restaurant_id`。
+- **一個店員帳號只能屬於一間門市**——`User.restaurant_id` 是單一欄位，不是關聯表。
+- **既有的桌位/歷史堂食測試資料直接捨棄不遷移**——沒有「預設門市」backfill 這個步驟；但為了避免直接刪資料這種破壞性操作，實作上選擇**新欄位一律 nullable**、舊資料保留原樣（`restaurant_id` 是 `NULL`），而不是真的執行 DELETE。影響：舊資料在新的門市 scoped 查詢（例如店員接單列表）底下會變成查不到（因為 `NULL` 不會等於任何一間門市的 `id`），等同「消失」，但沒有真的被刪除，之後如果需要還挽得回。
+
+**Phase 1（後端，已完成）：**
+
+- **`Restaurant` model**（`app/models.py`，新表）：`id`／`name`／`created_at`，先做到最小可用，之後有需要再加地址/營業時間之類欄位。
+- **`Table.restaurant_id`**／**`MenuItem.restaurant_id`**／**`User.restaurant_id`**／**`DineInOrder.restaurant_id`**（皆 FK 指向 `restaurants.id`，皆 `nullable=True`）——nullable 是刻意的，向下相容還沒更新的前端／既有資料，見上方。
+- **`DineInOrder.table_id`**（FK 指向 `tables.id`，`nullable=True`）——新流程用這個取代舊的自由文字 `table_number`；`table_number` 欄位**沒有移除**，繼續保留：帶 `table_id` 時後端會反查 `Table` 自動填回 `table_number`／`restaurant_id`，只帶 `table_number`（舊版前端）時走原本的自由文字路徑，`table_id`／`restaurant_id` 留空。兩者至少要帶一個（`DineInOrderCreate` 用 `model_validator` 擋，都沒帶回 422）。
+- **`GET/POST/DELETE /api/v1/restaurants`**（`app/api/v1/endpoints/restaurants.py`）：`GET` 公開（不需 JWT，顧客端「選餐廳」畫面用，比照 `GET /menu-items` 不要求登入才能瀏覽）；`POST`／`DELETE` 用 `verify_admin_or_staff` 雙軌驗證（`X-Admin-Key` 或 `role="staff"` JWT 皆可，比照 `coupons/admin/issue`）——開分店比日常桌位管理更接近店長/老闆決策，但系統目前沒有比 `staff` 更細的管理者角色，先跟現有雙軌模式對齊，之後如果業務需要更嚴格的權限（例如只允許 `X-Admin-Key`）再收緊。
+- **店員端端點一律自動依登入店員的 `User.restaurant_id` scope，不接受前端傳門市參數**（`staff` 那邊提出的簡化建議，已採用）：`GET/POST/DELETE /api/v1/tables`、`GET/POST /api/v1/menu-items/admin`／新增／`PATCH /api/v1/menu-items/{id}`、`GET /api/v1/dine-in-orders`（店員接單列表）皆是如此；`current_user.restaurant_id is None` 時一律回 `400`「帳號尚未指定所屬門市」，不會靜默回傳空清單或全部資料——店員帳號要先在 DB 手動指定門市（比照 `role` 手動指定的慣例，目前沒有自助端點）才能使用這些功能。
+- **公開端點的門市篩選是可選的（向下相容）**：`GET /api/v1/menu-items` 可加 `?restaurant_id=` 篩選，不帶就回傳全部門市的品項（舊行為，等前端全面改用「選餐廳」流程後可以考慮之後收緊）。
+- **堂食新訂單推播通知（`send_role_push_notifications`）也一併加上門市篩選**：新增可選參數 `restaurant_id`，給定時只通知該門市的店員（`User.restaurant_id` 相符），避免 A 門市的新訂單吵到 B 門市的店員；訂單本身沒有門市資料時（`table_number`-only 的舊流程）就退回舊行為、通知所有店員，寧可照舊全發也不要漏發。
+- **`Table.code` 的 unique 範圍收斂**：原本是全域 `unique=True`，改成 `UniqueConstraint("restaurant_id", "code")`——不同門市現在可以各自有自己的 `"A3"`。
+
+**尚未完成、待前端規格明朗後才動工：**
+
+- **顧客端「選桌號清單」用的公開查詢端點還沒有**——目前 `GET /api/v1/tables` 是純店員管理端點（`role="staff"` 限定）。顧客掃 QR Code 進來是直接帶著明確的 `table_id`，不需要清單；但如果顧客是從 App 內手動「選餐廳→選桌號」（不是掃碼），需要一個顧客可呼叫的桌位清單端點，這塊還在等前端定案實際互動方式（例如要不要顯示桌位目前是否有人使用）才知道確切的 API 形狀，先不猜著做。
+- **QR Code 深層連結格式**——舊格式只帶桌號，多門市後要帶門市資訊，格式由前端主導、後端配合，尚未定案。
+- **Phase 2（staff-scanner／mynotification 前端配合）／Phase 3（後端把門市範圍從「可選」收緊成「強制」，例如 `DineInOrder` 建立時驗證 `table_id` 真的屬於合法門市）都還沒開始**，比照這個專案其他多階段 rollout（`PushToken.app_id`）的做法，等前端上線、有實際採用率後再收緊，避免中間態讓還沒更新的裝置突然壞掉。
 
 **Model 結構補充：** `User` 對 `Order`、`Favorite`、`DineInOrder` 皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多；`MenuItem` 對 `DineInOrderItem` 為一對多。
 

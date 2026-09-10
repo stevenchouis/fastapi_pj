@@ -12,6 +12,7 @@ from app.api.v1.endpoints import (
     orders,
     products,
     promotions,
+    restaurants,
     search,
     tables,
     users,
@@ -51,3 +52,6 @@ api_router.include_router(
 )
 api_router.include_router(tables.router, prefix="/tables", tags=["tables"])
 api_router.include_router(loyalty.router, prefix="/loyalty", tags=["loyalty"])
+api_router.include_router(
+    restaurants.router, prefix="/restaurants", tags=["restaurants"]
+)

@@ -13,7 +13,10 @@ from app.schemas.table import TableCreate, TableOut
 
 router = APIRouter()
 
-# 三支端點都要求 role="staff"（deps.get_current_staff_user），顧客帳號呼叫會 403。
+# 三支端點都要求 role="staff"（deps.get_current_staff_user），顧客帳號呼叫會 403，
+# 且一律依登入店員的 User.restaurant_id 自動 scope，不接受前端傳門市參數
+# （2026-09 多門市支援：店員一人只屬於一間門市，畫面上只需要唯讀顯示「目前門市」，
+# 不需要門市選擇器，見 CLAUDE.md 多門市一節）。
 
 
 @router.get("", response_model=List[TableOut])
@@ -21,8 +24,14 @@ async def list_tables(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(deps.get_current_staff_user),
 ):
-    """列出所有桌位，供店員管理畫面使用。"""
-    query = select(Table).order_by(Table.code)
+    """列出目前登入店員所屬門市的桌位，供店員管理畫面使用。"""
+    if current_user.restaurant_id is None:
+        raise HTTPException(status_code=400, detail="帳號尚未指定所屬門市")
+    query = (
+        select(Table)
+        .where(Table.restaurant_id == current_user.restaurant_id)
+        .order_by(Table.code)
+    )
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -33,9 +42,11 @@ async def create_table(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(deps.get_current_staff_user),
 ):
-    """新增桌位。桌號重複回 409。"""
+    """新增桌位到目前登入店員所屬門市。桌號在同一門市內重複回 409。"""
+    if current_user.restaurant_id is None:
+        raise HTTPException(status_code=400, detail="帳號尚未指定所屬門市")
     try:
-        table = Table(code=payload.code)
+        table = Table(code=payload.code, restaurant_id=current_user.restaurant_id)
         db.add(table)
         await db.flush()
         table_id = table.id
@@ -58,8 +69,16 @@ async def delete_table(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(deps.get_current_staff_user),
 ):
-    """刪除桌位，找不到回 404。"""
-    result = await db.execute(select(Table.id).where(Table.id == table_id))
+    """刪除桌位（只能刪除自己門市的桌位），找不到回 404。"""
+    if current_user.restaurant_id is None:
+        raise HTTPException(status_code=400, detail="帳號尚未指定所屬門市")
+
+    result = await db.execute(
+        select(Table.id).where(
+            Table.id == table_id,
+            Table.restaurant_id == current_user.restaurant_id,
+        )
+    )
     if result.first() is None:
         raise HTTPException(status_code=404, detail="桌位不存在")
 

@@ -44,6 +44,10 @@ class User(Base):
     # 紅利點數餘額——權威資料，異動一律走原子性 UPDATE（比照 Product.stock），
     # 不可為負；效期／明細記錄在 LoyaltyTransaction
     loyalty_balance = Column(Integer, nullable=False, server_default="0")
+    # 店員帳號歸屬的門市（僅 role="staff" 有意義）。一個店員只能屬於一間門市
+    # （2026-09 跟 mynotification/staff-scanner 三方確認過的業務規則，不是關聯表）；
+    # nullable 是為了向下相容既有帳號跟顧客帳號（顧客沒有門市歸屬）
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=True)
 
     # 建立與 PushToken 的關聯
     push_tokens = relationship(
@@ -242,6 +246,9 @@ class MenuItem(Base):
     __tablename__ = "menu_items"
 
     id = Column(Integer, primary_key=True, index=True)
+    # 門市歸屬——菜單是每間門市各自獨立（業務確認過，不是連鎖共用同一份）；
+    # nullable 原因同 Table.restaurant_id
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), index=True, nullable=True)
     name = Column(String, nullable=False)
     description = Column(String, nullable=False)
     category = Column(String, nullable=False)
@@ -262,7 +269,16 @@ class DineInOrder(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    # 舊版「自由文字輸入桌號」流程留下的欄位，繼續保留向下相容（前端還沒全面
+    # 改成「選桌號清單」之前，這欄位可能是唯一的桌號來源）；有 table_id 時，
+    # 這裡會存那張桌子當下的 code，兩者不會互相矛盾
     table_number = Column(String, nullable=False)
+    # 2026-09 多門市支援新增：顧客從清單選桌號時會有這兩個欄位；nullable 是因為
+    # 舊版前端可能還是只送 table_number（見上）。restaurant_id 是從 table_id
+    # 反查出來的門市，另外存一份是為了讓店員接單列表能直接依門市篩選，不用每次
+    # 都 join Table 表
+    table_id = Column(Integer, ForeignKey("tables.id"), nullable=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), index=True, nullable=True)
     # pending / preparing / served / cancelled——現場出餐流程狀態，
     # 跟網購 Order.status 的付款狀態語意不同，故分開兩張表，不共用同一個 status 欄位
     status = Column(String, nullable=False, default="pending")
@@ -295,13 +311,33 @@ class DineInOrderItem(Base):
     menu_item = relationship("MenuItem", back_populates="dine_in_order_items")
 
 
-class Table(Base):
-    __tablename__ = "tables"
+class Restaurant(Base):
+    """
+    門市／分店（2026-09 跟 mynotification/staff-scanner 三方確認上線的多門市支援）。
+    範圍只涵蓋堂食點餐（Table/MenuItem/DineInOrder/staff 帳號），網購商店
+    （Product/Order）刻意不跟著改——業務確認網購是集中倉儲，不需要綁定門市。
+    """
+
+    __tablename__ = "restaurants"
 
     id = Column(Integer, primary_key=True, index=True)
-    # 桌號字串（例如 "A3"），店員 App 拿這個組 QR Code deep link，
-    # unique 避免同一家店建立重複桌號
-    code = Column(String, unique=True, index=True, nullable=False)
+    name = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Table(Base):
+    __tablename__ = "tables"
+    __table_args__ = (
+        UniqueConstraint("restaurant_id", "code", name="uq_tables_restaurant_code"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    # 門市歸屬。nullable 是為了向下相容多門市上線前建立的既有資料（沒有刻意
+    # 遷移/捨棄舊資料，見 CLAUDE.md 多門市一節）；新建的桌位一律要求帶這個欄位
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), index=True, nullable=True)
+    # 桌號字串（例如 "A3"），店員 App 拿這個組 QR Code deep link；
+    # 改成「同一門市內 unique」而不是全域 unique（不同門市可以各自有自己的 "A3"）
+    code = Column(String, index=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
