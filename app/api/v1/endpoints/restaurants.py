@@ -7,8 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.database_async import get_db
-from app.models import Restaurant
+from app.models import Restaurant, Table
 from app.schemas.restaurant import RestaurantCreate, RestaurantOut
+from app.schemas.table import TableOut
 
 router = APIRouter()
 
@@ -20,6 +21,22 @@ async def list_restaurants(db: AsyncSession = Depends(get_db)):
     一樣不要求登入才能瀏覽。依名稱排序。
     """
     query = select(Restaurant).order_by(Restaurant.name)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+@router.get("/{restaurant_id}/tables", response_model=List[TableOut])
+async def list_restaurant_tables(restaurant_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    某間門市的桌位清單，公開端點（不需 JWT）——顧客端「選桌位」畫面用，是既有
+    QR Code 掃碼流程的備援/防呆（手動選單避免打錯字、打到別間店的桌號），
+    不是「找空桌」，業務確認過**不回傳佔用/使用中狀態**（那是完全不同的候位/
+    訂位情境，這次範圍不包含）。門市不存在或沒有桌位都回空陣列，不特別回 404
+    （避免前端還要多處理一種例外狀況）。
+    """
+    query = (
+        select(Table).where(Table.restaurant_id == restaurant_id).order_by(Table.code)
+    )
     result = await db.execute(query)
     return result.scalars().all()
 

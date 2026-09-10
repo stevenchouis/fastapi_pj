@@ -169,9 +169,10 @@ alembic upgrade head
 - **堂食新訂單推播通知（`send_role_push_notifications`）也一併加上門市篩選**：新增可選參數 `restaurant_id`，給定時只通知該門市的店員（`User.restaurant_id` 相符），避免 A 門市的新訂單吵到 B 門市的店員；訂單本身沒有門市資料時（`table_number`-only 的舊流程）就退回舊行為、通知所有店員，寧可照舊全發也不要漏發。
 - **`Table.code` 的 unique 範圍收斂**：原本是全域 `unique=True`，改成 `UniqueConstraint("restaurant_id", "code")`——不同門市現在可以各自有自己的 `"A3"`。
 
+- **`GET /api/v1/restaurants/{restaurant_id}/tables`**（`app/api/v1/endpoints/restaurants.py`，公開端點，不需 JWT）——顧客端「選桌位」畫面用，回應是 `TableOut` 陣列（`id`／`code`／`restaurant_id`／`created_at`）。跟店員專用的 `GET /tables`（自動 scope、需要登入）是分開的兩支端點，語意不同：這支是「瀏覽某間門市有哪些桌位」，`/tables` 是「管理我自己門市的桌位」。**業務確認過不回傳佔用/使用中狀態**——這個手動選單定位是既有 QR Code 掃碼流程的備援/防呆（避免手動輸入打錯字、打到別間店的桌號），不是幫顧客「找空桌」，那是完全不同的候位/訂位情境，這次範圍不包含。門市不存在或沒有桌位都回空陣列，不回 404。
+
 **尚未完成、待前端規格明朗後才動工：**
 
-- **顧客端「選桌號清單」用的公開查詢端點還沒有**——目前 `GET /api/v1/tables` 是純店員管理端點（`role="staff"` 限定）。顧客掃 QR Code 進來是直接帶著明確的 `table_id`，不需要清單；但如果顧客是從 App 內手動「選餐廳→選桌號」（不是掃碼），需要一個顧客可呼叫的桌位清單端點，這塊還在等前端定案實際互動方式（例如要不要顯示桌位目前是否有人使用）才知道確切的 API 形狀，先不猜著做。
 - **QR Code 深層連結格式**——舊格式只帶桌號，多門市後要帶門市資訊，格式由前端主導、後端配合，尚未定案。
 - **Phase 2（staff-scanner／mynotification 前端配合）／Phase 3（後端把門市範圍從「可選」收緊成「強制」，例如 `DineInOrder` 建立時驗證 `table_id` 真的屬於合法門市）都還沒開始**，比照這個專案其他多階段 rollout（`PushToken.app_id`）的做法，等前端上線、有實際採用率後再收緊，避免中間態讓還沒更新的裝置突然壞掉。
 
