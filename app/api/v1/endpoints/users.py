@@ -141,6 +141,7 @@ async def update_user_push_token(
             # 這樣可以處理「同一台手機切換不同帳號登入」的情況
             existing_record.user_id = current_user.id
             existing_record.device_name = payload.device_name
+            existing_record.app_id = payload.app_id
             # 在某些 SQLAlchemy 配置中，修改屬性後建議執行 add 以確保追蹤
             db.add(existing_record)
             logger.info(
@@ -151,6 +152,7 @@ async def update_user_push_token(
             new_token = models.PushToken(
                 token=payload.token,
                 device_name=payload.device_name,
+                app_id=payload.app_id,
                 user_id=current_user.id,
             )
             db.add(new_token)

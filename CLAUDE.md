@@ -55,6 +55,12 @@ alembic upgrade head
 
 **推播通知**（`app/services/push_service.py`）：`send_user_push_notifications(db_factory, user_id, title, body, data)` 設計為在 FastAPI 的 `BackgroundTask` 中執行——它接收的是 session *工廠函式*（而非 session 本身），這樣才能在觸發請求已經回應完畢後，自行開啟一個短暫的資料庫連線，取完資料後立即關閉，再於資料庫交易之外呼叫 Expo 的 `PushClient` 發送推播。之後若要新增背景推播相關程式碼，建議依循這個模式（先撈資料 → 關閉 DB session → 再發送推播），避免讓資料庫連線在等待網路呼叫時一直開著。
 
+**`PushToken.app_id`（2026-09-10，三方分階段上線中，目前完成 Phase 1）：** 背景——`stevenchouis@hotmail.com` 這個帳號同時裝了 mynotification 跟 staff-scanner 兩個 App（各自是不同 EAS `projectId`，所以 Expo push token 字串本來就不同，`token` 欄位本身沒有衝突），但兩個 App 都打同一支 `POST /users/push-tokens`，而 `PushToken` 表原本完全沒有欄位記錄「這是哪個 App 註冊的」；`send_user_push_notifications`／`send_role_push_notifications`／`send_favorite_users_notifications` 這幾支發送函式又是 `SELECT token FROM push_tokens WHERE user_id IN (...)`，不分 App、發給該使用者名下**全部**token。結果是任何本來只該給某一個 App 的推播（例如收藏商品降價通知只該給 mynotification），會同時發到使用者裝的另一個 App 上，造成使用者點擊通知卻跳到錯的 App。這是 2026-09-09/10 跟 `mynotification-d0` session 一起 debug「降價推播點擊後跳到 staff-scanner」時，查 `PushToken` 資料實際發現有 3 筆不同 token（`id=1/2/4`）才確認的根因，跟 staff 端猜測的「後端用 `user_id` 當 key、只存一筆、被覆蓋」不同——**三筆都有存**，問題是發送時沒有依 App 篩選。
+
+- **Phase 1（已完成）：** `PushToken` 新增 `app_id`（String，`nullable=True`，`index=True`）欄位，值規劃為 `"mynotification"` / `"staff-scanner"`。`app/schemas/push_token.py` 的 `PushTokenCreate` 新增對應的 `Optional[str] = None`，`POST /users/push-tokens`（`app/api/v1/endpoints/users.py` 的 `update_user_push_token`）的 upsert 邏輯（新建/更新兩個分支）都會存這個欄位。**刻意 nullable、不要求必填**——向下相容還沒更新的舊版 App，舊 App 呼叫這支端點完全不用改，只是存進去的 `app_id` 會是 `None`。**目前發送函式還沒有依 `app_id` 篩選**，維持「發給該使用者全部 token」的舊行為不變，等 Phase 2 完成後才會加篩選（見下），現在就篩的話舊版 App 的 token 全部是 `None`，會直接收不到任何推播。
+- **Phase 2（等待中，前端負責）：** mynotification／staff-scanner 兩邊 App 各自更新 `POST /users/push-tokens` 呼叫，帶上自己的 `app_id`（`"mynotification"`／`"staff-scanner"`）。兩邊都要動，且要等使用者更新到新版 App、重新註冊過 token 後才算完成（`registerForPushNotificationsAsync` 這類註冊呼叫通常掛在每次登入的 `useEffect`，不是只有裝機當下才觸發一次，所以舊 token 會隨使用者重新登入逐漸被新版覆蓋/取代，不用強制要求所有人立刻更新）。
+- **Phase 3（尚未開始）：** 兩邊 App 都上線並有一定採用率後，才回來改 `send_user_push_notifications`／`send_role_push_notifications`／`send_favorite_users_notifications`，依情境篩選 `app_id`（例如收藏通知/生日禮券只發 `app_id="mynotification"`，堂食新訂單通知店員只發 `app_id="staff-scanner"`）。**`app_id IS NULL` 的舊 token 在 Phase 3 上線當下要怎麼處理（例如過渡期先當成「兩邊都發」直到自然被新註冊覆蓋掉，還是乾脆不發）還沒定案**，動工前要再確認一次，避免造成還沒更新 App 的使用者突然完全收不到推播。
+
 **檔案上傳：** 上傳的檔案存放在專案根目錄的 `uploads/`（不在 `app/` 底下），並透過 `User.avatar_url` 儲存其網址。
 
 **前端可控清單類端點（後台維護、無需複雜權限模型）：** 目前有兩個這類端點，資料表由營運／後台手動維護，端點本身皆為公開（無需 JWT）：

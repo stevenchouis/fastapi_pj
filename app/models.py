@@ -84,6 +84,11 @@ class PushToken(Base):
         String, unique=True, index=True, nullable=False
     )  # 儲存 ExpoPushToken[xxx...]
     device_name = Column(String, nullable=True)  # 可選：辨識裝置類型 (如 "iPhone 15")
+    # 這個 token 是哪個 App 註冊的："mynotification" / "staff-scanner"。
+    # nullable 是為了向下相容還沒更新的舊版 App（沒帶這個欄位就存 None）；
+    # 發送推播時目前還沒有依此欄位篩選（2026-09 三方分階段上線中，見 CLAUDE.md
+    # 「推播通知」一節的 rollout 計畫，等兩邊 App 都改送這個欄位後才會開始篩選）
+    app_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="push_tokens")
