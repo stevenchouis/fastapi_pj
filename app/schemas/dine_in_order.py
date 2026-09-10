@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 class DineInOrderItemCreate(BaseModel):
@@ -12,23 +12,15 @@ class DineInOrderItemCreate(BaseModel):
 
 class DineInOrderCreate(BaseModel):
     """
-    2026-09 多門市支援：新版前端會帶 table_id（顧客從清單選的桌位，後端據此反查
-    門市），舊版前端可能還是只送 table_number（自由文字，沒有門市概念）——兩者
-    至少要帶一個，table_id 存在時以它為準（table_number 會被忽略，回應時改用
-    查到的 table.code）。
+    2026-09 多門市支援 Phase 3：table_id 改成必填——Phase 1/2 期間曾經接受舊版
+    自由文字 table_number（沒有門市概念），兩邊前端（mynotification／staff-scanner）
+    都已確認改用「選桌位」流程並實機測過，才收緊這裡不再接受純 table_number。
     """
 
-    table_number: Optional[str] = Field(default=None, min_length=1)
-    table_id: Optional[int] = None
+    table_id: int
     items: List[DineInOrderItemCreate] = Field(min_length=1)
     # 要折抵的點數（可選），規則同 /orders：1 點 = NT$1，單筆最高折抵訂單金額 50%
     use_points: int = Field(default=0, ge=0)
-
-    @model_validator(mode="after")
-    def _require_table_identifier(self):
-        if self.table_id is None and not self.table_number:
-            raise ValueError("必須提供 table_id 或 table_number 其中一個")
-        return self
 
 
 class DineInOrderItemOut(BaseModel):

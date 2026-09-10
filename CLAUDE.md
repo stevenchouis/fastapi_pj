@@ -174,7 +174,8 @@ alembic upgrade head
 **尚未完成、待前端規格明朗後才動工：**
 
 - **QR Code 深層連結格式**——已由前端定案（`restaurant_id`+`table_id`），mynotification／staff-scanner 兩邊都已對接並實機測過。
-- **Phase 2（前端配合）已全部完成**：mynotification（顧客端「選餐廳→選桌號→選餐」＋ QR Code）、staff-scanner（`useAuthStore` 抓 `restaurant_id`、首頁顯示/編輯「目前門市」、`tables`/`menu-items`/`orders` 全部串接自動 scope）皆於 2026-09-10 回報完成並實機測過。**Phase 3（後端把門市範圍從「可選」收緊成「強制」，例如 `DineInOrder` 建立時驗證 `table_id` 真的屬於合法門市、拒絕純 `table_number` 的舊版請求）尚未開始**——兩邊前端都已確認完成，條件已經滿足，但實際要不要現在收緊、收緊到什麼程度，還沒跟 user 拍板，動工前需要先確認。
+- **Phase 2（前端配合）已全部完成**：mynotification（顧客端「選餐廳→選桌號→選餐」＋ QR Code）、staff-scanner（`useAuthStore` 抓 `restaurant_id`、首頁顯示/編輯「目前門市」、`tables`/`menu-items`/`orders` 全部串接自動 scope）皆於 2026-09-10 回報完成並實機測過。
+- **Phase 3（後端收緊成強制驗證，已完成）：** 跟兩邊前端都確認完成、user 拍板後動工。`POST /api/v1/dine-in-orders` 的 `table_id` 從可選改成**必填**（`DineInOrderCreate` 不再接受純文字 `table_number`，沒帶 `table_id` 回 422）；桌位解析邏輯也一併收緊——`table_id` 對應的 `Table` 不存在、**或存在但 `restaurant_id` 是 `NULL`**（多門市上線前的舊桌位，從未被指派門市）都回 404，理由是這種桌位就算收單，也會在店員接單列表（依 `restaurant_id` scope）裡永遠看不到，讓它能下單沒有意義。本機驗證過三種情境：不帶 `table_id` 回 422、帶舊桌位 id（`restaurant_id IS NULL`）回 404、帶合法門市的桌位 id 正常建單。`DineInOrderOut` 的 `table_id`／`restaurant_id` 欄位維持 `Optional`（給 Phase 3 上線前建立的舊訂單讀取時用，那些訂單本來就是 `NULL`，不受這次收緊影響——只有「建立新訂單」這個動作被收緊，讀取既有資料不變）。
 
 **Model 結構補充：** `User` 對 `Order`、`Favorite`、`DineInOrder` 皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多；`MenuItem` 對 `DineInOrderItem` 為一對多。
 

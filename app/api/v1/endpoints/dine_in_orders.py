@@ -74,21 +74,18 @@ async def create_dine_in_order(
     /orders 相同（1 點 = NT$1，上限訂單小計 50%），驗證/扣點都跟建立訂單包在同一個
     transaction。
 
-    桌號有兩種來源（見 DineInOrderCreate）：帶 table_id 時會反查 Table 拿到門市
-    （2026-09 多門市支援的新流程，顧客從清單選桌位）；只帶 table_number 時走舊版
-    自由文字輸入路徑，不驗證格式、table_id/restaurant_id 留空。
+    桌號來自 table_id 反查的 Table（2026-09 多門市支援 Phase 3：不再接受純文字
+    table_number，見 DineInOrderCreate）。桌位不存在、或存在但沒有 restaurant_id
+    （多門市上線前的舊資料，從未被指派門市，等同不可訂）一律回 404——這種桌位
+    就算收單也會在店員接單列表（依 restaurant_id scope）裡永遠看不到，讓它能下
+    單沒有意義。
     """
-    table_number = payload.table_number
-    restaurant_id = None
-    if payload.table_id is not None:
-        table_result = await db.execute(
-            select(Table).where(Table.id == payload.table_id)
-        )
-        table = table_result.scalars().first()
-        if not table:
-            raise HTTPException(status_code=404, detail="桌位不存在")
-        table_number = table.code
-        restaurant_id = table.restaurant_id
+    table_result = await db.execute(select(Table).where(Table.id == payload.table_id))
+    table = table_result.scalars().first()
+    if not table or table.restaurant_id is None:
+        raise HTTPException(status_code=404, detail="桌位不存在")
+    table_number = table.code
+    restaurant_id = table.restaurant_id
 
     # 同一品項在同一次點餐中出現多次時先合併數量
     quantities: dict[int, int] = {}
