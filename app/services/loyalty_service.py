@@ -35,11 +35,16 @@ async def earn_points(
     reason: str,
     related_order_id: int | None = None,
     related_dine_in_order_id: int | None = None,
+    restaurant_id: int | None = None,
 ) -> None:
     """
     記一筆賺點：新增 type="earn" 的 LoyaltyTransaction（remaining_amount 初始等於
     amount，expires_at 為入帳日 + EARN_EXPIRY_DAYS 天），並原子性增加 User.loyalty_balance。
     不會自己 commit，交易邊界由呼叫端控制（方便跟訂單建立/狀態更新包在同一個 transaction）。
+
+    restaurant_id 純粹是記錄用途（2026-09 多門市支援：統一錢包＋記錄消費門市，
+    不是各門市獨立錢包）——不影響餘額計算，堂食訂單以外的呼叫端（網購、連鎖層級
+    禮券）沒有門市脈絡就留 None。
     """
     if amount <= 0:
         return
@@ -54,6 +59,7 @@ async def earn_points(
             reason=reason,
             related_order_id=related_order_id,
             related_dine_in_order_id=related_dine_in_order_id,
+            restaurant_id=restaurant_id,
         )
     )
     await db.execute(
@@ -70,6 +76,7 @@ async def redeem_points(
     reason: str,
     related_order_id: int | None = None,
     related_dine_in_order_id: int | None = None,
+    restaurant_id: int | None = None,
 ) -> bool:
     """
     折抵點數：先用原子性 UPDATE 扣減 User.loyalty_balance（餘額不足回傳 False，不寫入
@@ -116,6 +123,7 @@ async def redeem_points(
             reason=reason,
             related_order_id=related_order_id,
             related_dine_in_order_id=related_dine_in_order_id,
+            restaurant_id=restaurant_id,
         )
     )
     return True

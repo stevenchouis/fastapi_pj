@@ -126,6 +126,10 @@ class Coupon(Base):
     # 核銷碼：只存 hash，不存明文；沒有產生過或已核銷/已重新產生過就是 None
     redeem_code_hash = Column(String, nullable=True, index=True)
     redeem_code_expires_at = Column(DateTime(timezone=True), nullable=True)
+    # 2026-09 多門市支援：純記錄用途，標記這張券是哪個門市發的（如果有的話）。
+    # NULL＝連鎖層級（新會員/生日禮券都是這種）。**不影響核銷**——任何門市的
+    # 店員都能核銷任何優惠券，跟這欄位加入前的行為完全一致，這裡刻意不加限制。
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=True)
 
     # 建立關聯
     user = relationship("User", back_populates="coupons")
@@ -358,6 +362,11 @@ class LoyaltyTransaction(Base):
     related_dine_in_order_id = Column(
         Integer, ForeignKey("dine_in_orders.id"), nullable=True
     )
+    # 2026-09 多門市支援：純記錄/報表用途，標記這筆異動發生在哪個門市（堂食訂單
+    # 才有；網購訂單、連鎖層級的禮券發點等沒有門市脈絡就是 NULL）。**不影響餘額
+    # 計算或折抵資格**——點數餘額仍是 User.loyalty_balance 單一帳戶層級，任何門市
+    # 賺的點都能在任何門市折抵，這欄位只是讓「這筆消費/折抵是哪個門市」可追溯。
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="loyalty_transactions")

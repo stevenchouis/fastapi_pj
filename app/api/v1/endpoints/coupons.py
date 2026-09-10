@@ -168,6 +168,7 @@ async def admin_issue_coupon(
         title=payload.title,
         discount_amount=payload.discount_amount,
         valid_days=payload.valid_days,
+        restaurant_id=payload.restaurant_id,
     )
 
     try:

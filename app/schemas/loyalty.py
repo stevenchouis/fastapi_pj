@@ -16,6 +16,7 @@ class LoyaltyTransactionOut(BaseModel):
     reason: str
     related_order_id: Optional[int] = None
     related_dine_in_order_id: Optional[int] = None
+    restaurant_id: Optional[int] = None
     created_at: datetime
     expires_at: Optional[datetime] = None
 

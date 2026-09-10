@@ -163,6 +163,7 @@ async def create_dine_in_order(
                 points_used,
                 reason=f"折抵：堂食訂單 #{order_id}",
                 related_dine_in_order_id=order_id,
+                restaurant_id=restaurant_id,
             )
             if not redeemed:
                 await db.rollback()
@@ -284,6 +285,7 @@ async def update_dine_in_order_status(
                 earned,
                 reason=f"消費回饋：堂食訂單 #{order.id}",
                 related_dine_in_order_id=order.id,
+                restaurant_id=order.restaurant_id,
             )
         await db.commit()
     except Exception as e:
