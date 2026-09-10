@@ -84,6 +84,7 @@ async def send_birthday_coupons_async_task():
             await send_user_push_notifications(
                 AsyncSessionLocal,
                 user_id,
+                "mynotification",
                 "🎂 生日禮物已送達！",
                 "下個月就是您的生日，100元優惠券已存入您的帳戶。",
                 {"coupon_id": coupon_id, "screen": "Coupons"},

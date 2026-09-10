@@ -184,6 +184,7 @@ async def admin_issue_coupon(
         send_user_push_notifications,
         AsyncSessionLocal,
         user_id,
+        "mynotification",
         "🎁 您收到一張優惠券",
         f"「{coupon.title}」已存入您的帳戶",
         {"coupon_id": coupon.id, "screen": "Coupons"},

@@ -111,6 +111,7 @@ async def create_user(
         send_user_push_notifications,
         AsyncSessionLocal,
         user_id,
+        "mynotification",
         "🎉 歡迎加入！",
         "新會員歡迎禮券已存入您的帳戶",
         {"coupon_id": coupon_id, "screen": "Coupons"},

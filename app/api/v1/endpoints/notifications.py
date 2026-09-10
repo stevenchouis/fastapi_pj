@@ -55,6 +55,7 @@ async def handle_task_completion(
         send_user_push_notifications,
         AsyncSessionLocal,  # 傳入工廠以便在背景開啟新的連線到DB
         user_id,
+        "mynotification",  # 這支是範例/demo 端點，沒有實際前端呼叫，固定給 mynotification
         title,
         body,
         {"type": task_type, "screen": "NotificationInbox"},  # 帶給 App 的跳轉參數

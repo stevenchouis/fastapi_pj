@@ -179,6 +179,7 @@ async def create_dine_in_order(
         send_role_push_notifications,
         AsyncSessionLocal,
         "staff",
+        "staff-scanner",
         "🍽️ 新的堂食訂單",
         f"桌號 {order.table_number} 送出新訂單",
         {"screen": "DineInOrders", "dine_in_order_id": order_id},

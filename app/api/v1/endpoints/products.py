@@ -146,6 +146,7 @@ async def update_product(
             send_favorite_users_notifications,
             AsyncSessionLocal,
             product_id,
+            "mynotification",
             "🎉 到貨通知",
             f"您收藏的「{product.title}」已經到貨了！",
             {
@@ -159,6 +160,7 @@ async def update_product(
             send_favorite_users_notifications,
             AsyncSessionLocal,
             product_id,
+            "mynotification",
             "💰 降價通知",
             f"您收藏的「{product.title}」降價了，現在只要 NT${product.price}！",
             {
