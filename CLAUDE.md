@@ -173,8 +173,8 @@ alembic upgrade head
 
 **尚未完成、待前端規格明朗後才動工：**
 
-- **QR Code 深層連結格式**——舊格式只帶桌號，多門市後要帶門市資訊，格式由前端主導、後端配合，尚未定案。
-- **Phase 2（前端配合）進度：mynotification 已完成**（2026-09-10 回報，「選餐廳→選桌號→選餐」與 QR Code 直接帶 `restaurant_id`/`table_id` 兩條路徑都已實機測過）；**staff-scanner 進度未知，還沒回報**。**Phase 3（後端把門市範圍從「可選」收緊成「強制」，例如 `DineInOrder` 建立時驗證 `table_id` 真的屬於合法門市）還沒開始**，要等兩邊前端都確認完成才能動工——比照這個專案其他多階段 rollout（`PushToken.app_id`）的做法，避免中間態讓還沒更新的裝置突然壞掉。
+- **QR Code 深層連結格式**——已由前端定案（`restaurant_id`+`table_id`），mynotification／staff-scanner 兩邊都已對接並實機測過。
+- **Phase 2（前端配合）已全部完成**：mynotification（顧客端「選餐廳→選桌號→選餐」＋ QR Code）、staff-scanner（`useAuthStore` 抓 `restaurant_id`、首頁顯示/編輯「目前門市」、`tables`/`menu-items`/`orders` 全部串接自動 scope）皆於 2026-09-10 回報完成並實機測過。**Phase 3（後端把門市範圍從「可選」收緊成「強制」，例如 `DineInOrder` 建立時驗證 `table_id` 真的屬於合法門市、拒絕純 `table_number` 的舊版請求）尚未開始**——兩邊前端都已確認完成，條件已經滿足，但實際要不要現在收緊、收緊到什麼程度，還沒跟 user 拍板，動工前需要先確認。
 
 **Model 結構補充：** `User` 對 `Order`、`Favorite`、`DineInOrder` 皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多；`MenuItem` 對 `DineInOrderItem` 為一對多。
 
