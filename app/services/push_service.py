@@ -20,7 +20,16 @@ async def _publish_to_tokens(
     loop = asyncio.get_event_loop()
     for token in token_list:
         msg = PushMessage(
-            to=token, title=title, body=body, data=data or {}, sound="default"
+            to=token,
+            title=title,
+            body=body,
+            data=data or {},
+            sound="default",
+            # 沒有帶這個的話 Android 會把通知歸進系統預設的「Miscellaneous」分類，
+            # 那個分類不支援橫幅（heads-up）顯示；前端已建立一個叫 "default" 的
+            # channel（見 app/_layout.tsx 的 setNotificationChannelAsync），這裡
+            # 要對應同一個名稱，Expo 才會把 channelId 一起送給 FCM
+            channel_id="default",
         )
         try:
             # 使用 executor 執行同步發送
