@@ -177,6 +177,13 @@ alembic upgrade head
 - **Phase 2（前端配合）已全部完成**：mynotification（顧客端「選餐廳→選桌號→選餐」＋ QR Code）、staff-scanner（`useAuthStore` 抓 `restaurant_id`、首頁顯示/編輯「目前門市」、`tables`/`menu-items`/`orders` 全部串接自動 scope）皆於 2026-09-10 回報完成並實機測過。
 - **Phase 3（後端收緊成強制驗證，已完成）：** 跟兩邊前端都確認完成、user 拍板後動工。`POST /api/v1/dine-in-orders` 的 `table_id` 從可選改成**必填**（`DineInOrderCreate` 不再接受純文字 `table_number`，沒帶 `table_id` 回 422）；桌位解析邏輯也一併收緊——`table_id` 對應的 `Table` 不存在、**或存在但 `restaurant_id` 是 `NULL`**（多門市上線前的舊桌位，從未被指派門市）都回 404，理由是這種桌位就算收單，也會在店員接單列表（依 `restaurant_id` scope）裡永遠看不到，讓它能下單沒有意義。本機驗證過三種情境：不帶 `table_id` 回 422、帶舊桌位 id（`restaurant_id IS NULL`）回 404、帶合法門市的桌位 id 正常建單。`DineInOrderOut` 的 `table_id`／`restaurant_id` 欄位維持 `Optional`（給 Phase 3 上線前建立的舊訂單讀取時用，那些訂單本來就是 `NULL`，不受這次收緊影響——只有「建立新訂單」這個動作被收緊，讀取既有資料不變）。
 
+**紅利點數／優惠券依門市獨立（2026-09-10 mynotification 提出，規劃中、尚未動工）：** 使用者確認紅利點數跟優惠券都要依門市區分成**各自獨立的錢包**（A 店賺的點數不能在 B 店用），不是單一帳戶餘額只記錄消費門市。範圍/風險比多門市點餐大很多——會動到剛上線不久的整個紅利點數系統，`earn_points`/`redeem_points` 介面改變會牽動所有呼叫端。**這是規劃階段的設計紀錄，還沒有跟 user 確認要不要現在做，不要看到這節就開始動工**：
+
+- **已定案的部分：** 新會員歡迎禮券／生日禮券維持連鎖層級（不綁門市，`restaurant_id` 可空）——這兩者是「加入會員」觸發的獎勵，不是特定門市消費行為；只有「特定門市活動加碼」這種未來如果要做，才需要綁 `restaurant_id`。
+- **技術設計方向（已跟前端對過，尚未實作）：** 新增 `LoyaltyWallet`（`user_id`／`restaurant_id`／`balance`，`UniqueConstraint(user_id, restaurant_id)`）取代現有單一的 `User.loyalty_balance`，延續這個專案「denormalized 欄位＋原子性 UPDATE」的慣例（不用 `SUM()` 動態算餘額，理由跟 `Product.stock`／`User.loyalty_balance` 一致：原子 UPDATE 才能不鎖表就防併發扣超）；`LoyaltyTransaction` 加 `restaurant_id`；`Coupon` 加 `restaurant_id`（nullable，`NULL`＝連鎖層級可任何門市核銷）；`POST /coupons/redeem` 要多一條檢查：券的 `restaurant_id` 不是 `NULL` 時必須等於核銷店員自己的 `restaurant_id`，這條會直接影響 `staff` 的核銷流程。
+- **懸而未決、刻意擱置的缺口：** 網購商店（`Product`/`Order`）完全沒有門市概念，等 ECPay 真的上線、網購開始賺點時，這筆點數要歸進哪個門市的錢包還沒有答案——記錄在這裡避免忘記，不用現在解。
+- **既有測試資料**：規劃比照桌位那批「新欄位 nullable、不遷移、舊資料保留原樣（變成看不到但沒被刪）」的做法，待定案。
+
 **Model 結構補充：** `User` 對 `Order`、`Favorite`、`DineInOrder` 皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多；`MenuItem` 對 `DineInOrderItem` 為一對多。
 
 ## 專案慣例
