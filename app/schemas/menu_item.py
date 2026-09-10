@@ -19,8 +19,9 @@ class MenuItemOut(BaseModel):
 
 
 class MenuItemAdminOut(MenuItemOut):
-    """店員管理後台用，比 MenuItemOut 多回傳 created_at/updated_at。"""
+    """店員管理後台用，比 MenuItemOut 多回傳 restaurant_id/created_at/updated_at。"""
 
+    restaurant_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
