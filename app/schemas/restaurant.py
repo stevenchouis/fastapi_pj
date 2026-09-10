@@ -1,11 +1,16 @@
 # app/schemas/restaurant.py
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
 
 class RestaurantCreate(BaseModel):
     name: str = Field(min_length=1)
+
+
+class RestaurantUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1)
 
 
 class RestaurantOut(BaseModel):

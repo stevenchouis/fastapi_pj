@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import deps
 from app.database_async import get_db
 from app.models import Restaurant, Table
-from app.schemas.restaurant import RestaurantCreate, RestaurantOut
+from app.schemas.restaurant import RestaurantCreate, RestaurantOut, RestaurantUpdate
 from app.schemas.table import TableOut
 
 router = APIRouter()
@@ -67,6 +67,37 @@ async def create_restaurant(
         await db.rollback()
         print(f"DEBUG: 新增門市失敗: {e}")
         raise HTTPException(status_code=500, detail="新增門市失敗")
+
+    result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+    return result.scalars().first()
+
+
+@router.patch(
+    "/{restaurant_id}",
+    response_model=RestaurantOut,
+    dependencies=[Depends(deps.verify_admin_or_staff)],
+)
+async def update_restaurant(
+    restaurant_id: int,
+    payload: RestaurantUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """編輯門市（目前只有 name 可改）。權限跟 create/delete 一致，找不到回 404。"""
+    result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+    restaurant = result.scalars().first()
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="門市不存在")
+
+    data = payload.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        setattr(restaurant, field, value)
+
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 更新門市失敗: {e}")
+        raise HTTPException(status_code=500, detail="更新門市失敗")
 
     result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
     return result.scalars().first()
