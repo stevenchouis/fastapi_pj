@@ -13,15 +13,17 @@ class ProductOut(BaseModel):
     price: float
     thumbnail: str
     images: List[str]
+    # 2026-09 前端要在商品詳情頁顯示庫存數字、列表顯示缺貨徽章，改成公開回傳；
+    # 原本刻意不給未登入使用者看精確庫存，這次跟 user 確認過改成直接曝光
+    stock: int
 
     class Config:
         from_attributes = True  # 允許從 SQLAlchemy 模型轉換
 
 
 class ProductAdminOut(ProductOut):
-    """店員管理後台用，比 ProductOut 多回傳 stock/is_active 等內部欄位。"""
+    """店員管理後台用，比 ProductOut 多回傳 is_active 等內部欄位。"""
 
-    stock: int
     is_active: bool
     created_at: datetime
     updated_at: datetime
