@@ -7,7 +7,9 @@ CheckMacValue 演算法是 ECPay 官方規定的固定流程（所有語言的�
 2. 頭尾補上 HashKey/HashIV，組成 "HashKey=xxx&k1=v1&...&HashIV=xxx"
 3. 對整串做 URL Encode（規則比照 .NET 的 UrlEncode），再整串轉小寫
 4. 把 .NET UrlEncode 不會跳脫、但 Python quote_plus 會跳脫的符號還原回來
-5. MD5 雜湊，結果轉大寫
+5. SHA256 雜湊，結果轉大寫（EncryptType=1 對應的就是 SHA256，ECPay 現行 API 只接受這個值，
+   舊版 MD5 演算法已停用——2026-09-14 實機測試出現 CheckMacValue Error 才發現這裡原本誤用
+   MD5，是實際發生過的 bug，不是理論上的風險，改動這段前務必先搞清楚 EncryptType 對應哪種演算法）
 
 這一段邏輯非常固定、錯一步結果就完全不同，改動時務必對照 ECPay 官方技術文件重新核對。
 """
@@ -53,7 +55,7 @@ def generate_check_mac_value(params: dict, hash_key: str, hash_iv: str) -> str:
         + f"&HashIV={hash_iv}"
     )
     encoded = _ecpay_url_encode(raw)
-    return hashlib.md5(encoded.encode("utf-8")).hexdigest().upper()
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest().upper()
 
 
 def verify_check_mac_value(params: dict, hash_key: str, hash_iv: str) -> bool:
