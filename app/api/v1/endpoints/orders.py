@@ -3,6 +3,7 @@ import secrets
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import List
+from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
@@ -238,9 +239,19 @@ async def ecpay_callback(
     沒有使用者 session。驗簽失敗／找不到訂單都回應非 "1|OK"，讓 ECPay 依它自己的重試機制
     再送一次；已經處理過的訂單（status 已是 paid）直接回 "1|OK"，避免 ECPay 重送造成
     重複發放點數。回應格式（純文字 "1|OK"）是 ECPay 的固定規定，不能改。
+
+    2026-09-14 實機測試發現：用 request.form()（底層是 python-multipart 的串流解析器）
+    在 Render 上偶爾會把 RtnMsg 這類含中文的欄位解碼成 Latin-1 亂碼（本機用 TestClient
+    無法重現，懷疑是真實網路環境下分段傳輸、逐段解碼 percent-encoding 時踩到 edge case），
+    中文欄位本身雖然不影響簽章正確性判斷的邏輯，但它也是 CheckMacValue 簽章涵蓋的欄位之一，
+    解碼錯了會導致我方重算的雜湊對不上 ECPay 送來的值，簽章驗證間歇性失敗。改成先用
+    request.body() 把完整原始 bytes 一次讀完，再用標準庫 parse_qsl 一次性解碼，
+    避開任何逐段解析可能踩到的 edge case。
     """
-    form = await request.form()
-    params = dict(form)
+    raw_body = await request.body()
+    params = dict(
+        parse_qsl(raw_body.decode("utf-8"), encoding="utf-8", keep_blank_values=True)
+    )
 
     if not ecpay_service.verify_check_mac_value(
         params, settings.ECPAY_HASH_KEY, settings.ECPAY_HASH_IV

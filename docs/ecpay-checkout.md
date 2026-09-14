@@ -102,6 +102,16 @@ App(WebView)              後端 (FastAPI)                    ECPay
 
 **2026-09-14 實機測試踩過的坑：`EncryptType=1` 對應的是 SHA256，不是 MD5。** 第一版實作用了 `hashlib.md5`，`EncryptType` 欄位值仍然固定填 `"1"`（這是 ECPay 現行 API 唯一接受的值），但雜湊演算法本身用錯——這是每一筆請求都 100% 重現的錯誤（不是偶發），前端用官方測試信用卡實測第一筆訂單，ECPay 直接回「CheckMacValue Error（10200073）」，連付款方式選擇畫面都出不來。改成 `hashlib.sha256` 後修正。這段程式碼一開始只做了「自己產生、自己驗證能通過」的自洽性測試，這種測法完全不會抓到「兩邊用不同雜湊演算法但都自洽」這類錯誤——**必須拿真實 ECPay 環境跑過一次才算數**，這也是為什麼上一版文件特別註記「還沒有拿官方範例驗證過」。
 
+### 為什麼 callback 改成手動 `request.body()` + `parse_qsl`，不用 FastAPI/Starlette 內建的 `request.form()`
+
+**2026-09-14 實機測試又踩到第二個坑，這次是真正造成間歇性簽章驗證失敗的根因。** 前一版用 `await request.form()` 解析 ECPay POST 進來的表單，前端第一次真的用測試信用卡付款完成後回報：付款流程本身正常（畫面走到輸入卡號、ECPay 顯示付款成功、`ClientBackURL` 也正確攔截導回），但訂單一直卡在 `pending`，`GET /orders/me` 重新整理也一樣。查 Render log 發現這支端點印出的 DEBUG log 顯示驗簽失敗，而且**同一筆訂單的重送才成功**（ECPay 對未收到 `1|OK` 的通知會自動重試）。
+
+比對失敗那次 log 印出的完整欄位，發現 `RtnMsg` 欄位是亂碼（`äº¤æ\x98\x93æ\x88\x90å\x8a\x9f`），這是典型的「UTF-8 位元組被誤用 Latin-1 解碼」症狀（「交」的 UTF-8 位元組 `E4 BA A4` 逐 byte 轉成 Latin-1 字元剛好就是 `äº¤`）。拿失敗那次的完整欄位、把 `RtnMsg` 換成正確解碼的「交易成功」重新計算一次 `CheckMacValue`，結果跟 ECPay 送來的值**完全相符**——證實 SHA256 簽章演算法本身、排序、URL encode 規則全部都是對的，唯一問題是 `request.form()`（底層是 `python-multipart` 的串流解析器）在 Render 的真實網路環境下，偶爾會把中文欄位解碼成 Latin-1 亂碼；`RtnMsg` 雖然是 ECPay 附加的訊息文字、邏輯上不影響「付款是否成功」的判斷，但它跟其他欄位一樣被算進 `CheckMacValue` 簽章範圍內，解碼錯了簽章就對不上。
+
+本機用 Starlette `TestClient` 重現不出這個問題（`TestClient` 是進程內直接呼叫、不經過真實 TCP／分段傳輸，`request.form()` 表現正常），懷疑是真實網路環境下分段接收 body、`python-multipart` 逐段解碼 percent-encoding 時踩到的 edge case。修法是改成先 `await request.body()` 把完整原始 bytes 一次讀完，再用標準庫 `urllib.parse.parse_qsl(raw.decode("utf-8"), encoding="utf-8", keep_blank_values=True)` 一次性解碼（`keep_blank_values=True` 是必要的——`parse_qsl` 預設會把 `StoreID=''`、`CustomField1=''` 這類空值欄位直接丟掉，而 ECPay 的簽章範圍包含這些空值欄位，漏掉一樣會讓簽章對不上），避開任何逐段解析可能踩到的問題。
+
+這個 bug 也再次印證同一件事：**自洽性測試（自己產生、自己驗證）完全無法抓到「兩邊實際收到的資料不一致」這類問題**，MD5/SHA256 那次是「演算法本身錯」，這次是「輸入資料在解析階段就已經錯了」，兩次都只有拿真實 ECPay 環境跑過一次真實請求才抓得到，本機測試（不管是自洽性測試還是 `TestClient` 模擬）都測不出來。
+
 ### `ReturnURL` 為什麼一定要 idempotent
 
 ECPay 對同一筆交易的 Server-to-Server 通知可能重送（例如我方回應逾時、網路問題）。如果沒有先檢查 `order.status == "paid"` 就直接處理，重送會導致 `earn_points` 被呼叫兩次、使用者拿到雙倍點數。目前的作法是收到通知時先查訂單目前狀態，已經是 `paid` 就直接回 `1|OK` 不做任何寫入。
@@ -112,7 +122,7 @@ ECPay 標準信用卡付款不支援小數金額，只能傳整數元。目前�
 
 ## 已知限制／待辦
 
-- **簽章演算法已修正一次真實 bug（MD5→SHA256），但尚未跑完一次成功付款**：2026-09-14 前端第一次實機測試就撞到 `EncryptType=1` 誤用 MD5 雜湊（應為 SHA256）的問題，已修正，但**還沒有實際成功跑完一次付款流程**（改完後還在等前端重新實測）。下次前端回報結果前，不應該假設這段程式碼已經沒問題。
+- **已修正兩個真實 bug（MD5→SHA256、`request.form()` 中文解碼），但尚未跑完一次「首次通知即成功」的付款**：2026-09-14 前端連續兩輪實機測試分別撞到：(1) `EncryptType=1` 誤用 MD5（應為 SHA256），(2) `request.form()` 在 Render 真實網路環境下偶爾把 `RtnMsg` 這類中文欄位解碼成 Latin-1 亂碼，導致簽章間歇性失敗（詳見上方「關鍵設計決策」）。兩個都已修正，且第二個 bug 已經用「拿失敗當下的真實欄位、手動校正 `RtnMsg` 重算雜湊、結果跟 ECPay 完全相符」的方式驗證過根因無誤。但**目前所有成功案例都是靠 ECPay 的自動重送機制才過的（第一次通知永遠失敗）**，還沒有觀察過「第一次通知就直接成功」的案例——修正後需要前端重新實測確認第一次就過，不能只看「最終有沒有變成 `paid`」。
 - **`TotalAmount` 的小數捨入**：見上方「關鍵設計決策」，目前用簡單 `round()`，還沒有跟業務確認這個誤差是否可接受。
 - **`ClientBackURL` fallback 落地頁尚未實作**：前端確認主要路徑是 WebView 直接攔截 custom scheme，目前沒有另外做 https 中繼落地頁當保底；如果之後真的遇到某些機型/情境攔截不到，需要再補。
 - **付款失敗（`RtnCode != "1"`）目前只是把 `Order.status` 標成 `"failed"`，沒有把已扣的庫存加回去**——這是延續 `docs/products-and-orders.md` 原本就記錄的「訂單逾時未取消、沒有自動取消機制歸還庫存」的已知限制，這次沒有一併處理。
