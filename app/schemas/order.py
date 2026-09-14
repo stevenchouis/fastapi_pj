@@ -1,6 +1,6 @@
 # app/schemas/order.py
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,11 @@ class OrderCheckoutOut(BaseModel):
     # 前端把 fields 組成表單（或 WebView 用的 auto-submit HTML）POST 到 action_url
     action_url: str
     fields: Dict[str, str]
+
+
+class OrderStatusUpdate(BaseModel):
+    # 目前只開放標成 shipped 這一個目標值，比照 DineInOrderStatusUpdate 的模式
+    status: Literal["shipped"]
 
 
 class OrderOut(BaseModel):

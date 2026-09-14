@@ -128,12 +128,23 @@ App                          後端 (FastAPI)                         DB
 
 綠界 ECPay 要求 `MerchantTradeNo` 是英數字、長度上限 20 碼、同一特店（Merchant）底下不能重複。目前用「時間戳（到秒，12 碼）+ 2 bytes 隨機碼（4 碼英數）+ 前綴 `O`」組出 17 碼，同一秒內撞號機率極低；真的撞號時會被資料庫的 `unique=True` 限制擋下、走 500 錯誤處理，還沒有做「撞號自動重試」的機制（見下方已知限制）。
 
+## 出貨管理（2026-09-14 由前端 mynotification 提出，已上線）
+
+ECPay 金流串接完成後（見 `docs/ecpay-checkout.md`），訂單付款完成停在 `status="paid"` 就沒有後續狀態追蹤，使用者不知道有沒有出貨。跟 mynotification、staff-scanner 兩邊 session 三方對齊後定案：**擴充 `role="staff"` 的範圍涵蓋網購出貨**（原本 `staff` 角色明確排除網購商店，只管堂食，這次是對那個邊界的變更）。
+
+- **`Order.status` 新增 `"shipped"`**：沒有 DB 層 enum 限制（比照 `DineInOrder.status` 的慣例），只是多一個合法的字串值，不需要 migration。
+- **`GET /api/v1/orders`**（需 `role="staff"`，`app/api/v1/endpoints/orders.py`）：店員出貨管理列表，可加 `?status=` 篩選（預設 `"paid"`，即等待出貨的訂單），依 `created_at` **舊到新**排序（FIFO，比照堂食接單列表）。**網購商店刻意沒有門市概念**（`Product`/`Order` 是集中倉儲，不綁 `restaurant_id`——三方都確認過），所以這支**不會**像 `GET /dine-in-orders` 那樣自動 scope 到店員自己的門市，是跨門市看全部訂單。
+- **`PATCH /api/v1/orders/{order_id}/status`**（需 `role="staff"`）：body `{"status": "shipped"}`（`OrderStatusUpdate` schema 用 `Literal["shipped"]` 限制，帶其他值回 422，比照 `DineInOrderStatusUpdate` 的模式）。只允許從 `"paid"` 轉過去，訂單不是 `"paid"`（還沒付款/已出貨過/失敗/取消）回 409，找不到訂單回 404。成功後透過 `BackgroundTasks` 呼叫 `send_user_push_notifications`（`app_id="mynotification"`）推播通知買家，複用既有推播基礎設施。
+- **`points_earned` 顯示邏輯一併修正**：`_to_order_out` 原本只在 `status=="paid"` 時才顯示非 0 的 `points_earned`，訂單變成 `"shipped"` 後這個條件就不成立了，會誤顯示成 0——但實際上點數是在 `status` 變成 `"paid"` 那一刻（ECPay callback）就已經真的發放，出貨只是後續狀態，不影響已經發生的事實。修正成 `status in ("paid", "shipped")` 都顯示。
+- **踩到一次「commit 後存取物件屬性」的 `MissingGreenlet` 坑**：`update_order_status` 一開始寫成 `order.status = "shipped"` → `await db.commit()` → 直接用同一個 `order` 物件的 `.items`／`.user_id` 組回應／背景推播參數，本機測試時 request 直接回傳空 body（沒有任何 JSON），實際查 DB 才發現**寫入本身有成功**（訂單真的變成 `shipped` 了），只是序列化回應時炸掉——`await db.commit()` 後 session 預設會把物件所有屬性標記過期，之後碰任何屬性（不管是 `items` 這種關聯還是 `user_id` 這種純欄位）都會觸發非同步重新查詢、在目前的呼叫環境下噴 `MissingGreenlet`。這是 `docs/products-and-orders.md`／CLAUDE.md 已經記錄過的同一個坑，這次是新寫的端點又踩了一次——修法比照既有慣例：需要的值（`order.user_id`）在 commit **前**先存成區域變數，commit 後只用區域變數＋重新查詢一次拿完整關聯。
+
 ## 已知限制／待辦
 
-- **ECPay 串接尚未完成**：`POST /orders` 目前只會建立 `status="pending"` 的訂單並扣庫存，**還沒有實際呼叫 ECPay 的 Checkout API、也還沒有驗證付款完成的 callback**。需要商店的 `MerchantID`／`HashKey`／`HashIV`（要等實際申請到綠界的商店測試／正式環境金鑰後才能串）。串接時要額外注意 callback 簽章驗證（ECPay 的 `CheckMacValue`），避免有人偽造付款成功的請求把 `Order.status` 改成 `paid`。
 - **訂單逾時未取消**：`status="pending"` 的訂單如果使用者一直沒去 ECPay 完成付款，目前沒有自動取消機制歸還庫存——之後可能需要一個排程任務，把超過一段時間仍是 `pending` 的訂單標記 `cancelled` 並把 `Product.stock` 加回去。
 - **`merchant_trade_no` 撞號沒有自動重試**：機率極低但理論上可能發生，目前撞號會直接回 500，前端需要重新送出下單請求。
-- **`Order.status` 目前沒有 `refunded`／退款流程**：等實際串 ECPay 之後，可能需要視綠界支援的退款 API 再擴充。
+- **`Order.status` 目前沒有 `refunded`／退款流程**：等 ECPay 退款 API 需求明確後再擴充。
+- **出貨狀態只有單一 `"shipped"`，沒有完整物流追蹤**：沒有真的串物流商 API，三方討論後刻意不做「配送中/已送達」這種細顆粒度狀態。
+- **`shipped` 之後沒有更後續的狀態（例如「已送達」／退貨）**：目前沒有使用者在等這塊，三方確認可以先擱著。
 - 商品資料是 DummyJSON 原始的 194 筆（美妝、手錶、手機等雜項分類），不是正式商品目錄；之後要換成真正商品時，直接清空 `products` 表重新手動建資料或改匯入來源即可，不影響 API 形狀。
 
 ## 驗證方式
@@ -143,3 +154,4 @@ App                          後端 (FastAPI)                         DB
 3. 未帶 JWT 打 `GET /orders/me`、`POST /orders` 皆回 401，確認保護正確。
 4. 對 Supabase 執行 `alembic upgrade head` 建表，執行 `python -m app.scripts.seed_products` 匯入 194 筆商品並用獨立查詢腳本確認筆數與樣本資料正確。
 5. push 到 GitHub 後，等 Render Auto-Deploy 跑完，用 WebFetch 打線上 `https://fastapi-pj-2.onrender.com/api/v1/products` 確認回傳 200 且是新的商品資料格式（DummyJSON 商品，而非舊版行為）。
+6. **出貨管理**（2026-09-14）：本機啟動 uvicorn，用 `create_access_token` 直接簽一組 `role="staff"` 使用者的 JWT，跑過完整流程（皆對同一個 Supabase DB）：建單→checkout→模擬合法 ECPay callback 變成 `paid`→`GET /orders`（staff 列表）確認該筆出現在待出貨清單→`PATCH /{id}/status` 標記 `shipped`→確認回應 200 且完整 `items` 正確、`points_earned` 仍正確顯示非 0、伺服器 log 沒有推播相關錯誤→重複呼叫同一筆回 409→帶非法 `status` 值回 422→`GET /orders/me` 確認該筆訂單狀態確實變成 `"shipped"`。這輪測試也是踩到並修正「commit 後存取物件屬性導致 `MissingGreenlet`」那個 bug 的過程（見上方「出貨管理」小節）。

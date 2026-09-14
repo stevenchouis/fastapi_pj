@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import List
 from urllib.parse import parse_qsl
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,11 +13,18 @@ from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.core.config import settings
-from app.database_async import get_db
+from app.database_async import AsyncSessionLocal, get_db
 from app.models import Order, OrderItem
 from app.models import Product as ProductModel
-from app.schemas.order import OrderCheckoutOut, OrderCreate, OrderItemOut, OrderOut
+from app.schemas.order import (
+    OrderCheckoutOut,
+    OrderCreate,
+    OrderItemOut,
+    OrderOut,
+    OrderStatusUpdate,
+)
 from app.services import ecpay_service, loyalty_service
+from app.services.push_service import send_user_push_notifications
 
 router = APIRouter()
 
@@ -34,11 +41,13 @@ def _generate_merchant_trade_no() -> str:
 
 
 def _to_order_out(order: Order) -> OrderOut:
-    # points_earned 是算出來的（不是存在 DB 的欄位）：等 ECPay 串好、
-    # status 真的會變成 paid 之後這裡才會回傳非 0 的值，目前恆為 0
+    # points_earned 是算出來的（不是存在 DB 的欄位），跟實際發點邏輯共用同一個
+    # calc_earned_points，確保顯示數字跟 LoyaltyTransaction 真正入帳的數字一致。
+    # "shipped" 也算——出貨只是付款完成後的後續狀態，earn_points 是在 status 變成
+    # "paid" 那一刻就已經真的發放了，不是等出貨才發，這裡只是沿用已經發生過的事實。
     points_earned = (
         loyalty_service.calc_earned_points(order.total_amount)
-        if order.status == "paid"
+        if order.status in ("paid", "shipped")
         else 0
     )
     return OrderOut(
@@ -295,3 +304,78 @@ async def ecpay_callback(
         return PlainTextResponse("0|ProcessError")
 
     return PlainTextResponse("1|OK")
+
+
+@router.get("", response_model=List[OrderOut])
+async def list_orders_for_staff(
+    status: str = "paid",
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_staff_user),
+):
+    """
+    店員出貨管理列表（`role="staff"`）。網購商店（`Product`/`Order`）刻意沒有門市概念
+    （集中倉儲，見 CLAUDE.md），所以這支不像堂食訂單列表會自動 scope 到店員自己的門市，
+    是跨門市看全部訂單。預設篩 `status="paid"`（等待出貨的訂單），依 `created_at`
+    舊到新排序（FIFO，比照堂食接單列表）。
+    """
+    query = (
+        select(Order)
+        .where(Order.status == status)
+        .options(ORDER_LOAD_OPTIONS)
+        .order_by(Order.created_at.asc())
+    )
+    result = await db.execute(query)
+    orders = result.scalars().all()
+    return [_to_order_out(order) for order in orders]
+
+
+@router.patch("/{order_id}/status", response_model=OrderOut)
+async def update_order_status(
+    order_id: int,
+    payload: OrderStatusUpdate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_staff_user),
+):
+    """
+    店員標記訂單已出貨（`role="staff"`）。目前只開放 status="shipped" 這一個目標值
+    （schema 用 Literal 限制，帶其他值回 422），只允許從 "paid" 轉過去，找不到訂單回 404，
+    訂單不是 "paid" 狀態（還沒付款、已出貨過、失敗、取消）回 409。
+    """
+    query = select(Order).where(Order.id == order_id).options(ORDER_LOAD_OPTIONS)
+    result = await db.execute(query)
+    order = result.scalars().first()
+    if order is None:
+        raise HTTPException(status_code=404, detail="訂單不存在")
+    if order.status != "paid":
+        raise HTTPException(status_code=409, detail="只有已付款的訂單可以標記出貨")
+
+    order.status = payload.status
+    # commit 後 session 預設會把物件所有屬性標記為過期，之後不能再碰 order 的任何屬性
+    # （不管是 order.items 這種關聯、還是 order.user_id 這種純欄位）——會觸發同步環境下
+    # 無法完成的非同步重新查詢，噴 MissingGreenlet（CLAUDE.md 記錄過的同一個坑）。
+    # 需要的值先存成區域變數，commit 後只用區域變數、重新查詢一次取得完整關聯。
+    order_user_id = order.user_id
+
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 標記訂單出貨失敗: {e}")
+        raise HTTPException(status_code=500, detail="標記出貨失敗")
+
+    # 比照 push_service 既有慣例，session 已經 commit 完才觸發，不佔用交易時間
+    background_tasks.add_task(
+        send_user_push_notifications,
+        AsyncSessionLocal,
+        order_user_id,
+        "mynotification",
+        "您的訂單已出貨",
+        f"訂單 #{order_id} 已出貨，敬請留意配送進度。",
+        {"type": "order_shipped", "screen": "OrderDetail", "order_id": order_id},
+    )
+
+    query = select(Order).where(Order.id == order_id).options(ORDER_LOAD_OPTIONS)
+    result = await db.execute(query)
+    order = result.scalars().first()
+    return _to_order_out(order)
