@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     BASE_URL: str = "http://192.168.68.56:8000"
     # 管理者手動發券 API 用的固定密鑰（X-Admin-Key header 比對），不給預設值強迫從 .env 讀取
     ADMIN_API_KEY: str
+    # 綠界 ECPay 金流：特店編號／HashKey／HashIV，不給預設值強迫從 .env 讀取
+    ECPAY_MERCHANT_ID: str
+    ECPAY_HASH_KEY: str
+    ECPAY_HASH_IV: str
+    # AioCheckOut/V5 的 action URL，預設測試環境；上線時改成 .env 裡的正式環境網址即可
+    ECPAY_ACTION_URL: str = "https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5"
 
     # 明確指定 env_file 的絕對路徑
     model_config = SettingsConfigDict(

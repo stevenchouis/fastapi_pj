@@ -1,6 +1,6 @@
 # app/schemas/order.py
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +26,12 @@ class OrderItemOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class OrderCheckoutOut(BaseModel):
+    # 前端把 fields 組成表單（或 WebView 用的 auto-submit HTML）POST 到 action_url
+    action_url: str
+    fields: Dict[str, str]
 
 
 class OrderOut(BaseModel):

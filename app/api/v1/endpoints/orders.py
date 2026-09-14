@@ -4,17 +4,19 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
+from app.core.config import settings
 from app.database_async import get_db
 from app.models import Order, OrderItem
 from app.models import Product as ProductModel
-from app.schemas.order import OrderCreate, OrderItemOut, OrderOut
-from app.services import loyalty_service
+from app.schemas.order import OrderCheckoutOut, OrderCreate, OrderItemOut, OrderOut
+from app.services import ecpay_service, loyalty_service
 
 router = APIRouter()
 
@@ -92,10 +94,9 @@ async def create_order(
     用來折抵訂單金額（1 點 = NT$1，上限訂單小計 50%），驗證/扣點都跟建立訂單包在
     同一個 transaction，任一步失敗就整單 rollback（詳見 loyalty_service）。
 
-    注意：金流（綠界 ECPay）串接尚未完成——這裡只建立 pending 狀態的訂單並扣庫存，
-    之後要補上呼叫 ECPay Checkout 頁面、以及付款完成 callback 驗簽、更新
-    status/payment_reference/paid_at 的步驟；消費回饋點數（earn）也要等那個時候
-    才會真的觸發（見 loyalty_service.calc_earned_points）。
+    這裡只建立 pending 狀態的訂單並扣庫存；金流動作（叫出付款頁、驗證付款結果）
+    是後續呼叫 POST /{order_id}/checkout 跟 ECPay 打 POST /ecpay/callback 才會發生，
+    消費回饋點數（earn）也是等 callback 確認 RtnCode=1 才會真的觸發。
     """
     # 同一商品在同一次下單中出現多次時先合併數量，避免重複扣庫存判斷失準
     quantities: dict[int, int] = {}
@@ -198,3 +199,88 @@ async def create_order(
     result = await db.execute(query)
     order = result.scalars().first()
     return _to_order_out(order)
+
+
+@router.post("/{order_id}/checkout", response_model=OrderCheckoutOut)
+async def create_order_checkout(
+    order_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_user),
+):
+    """
+    組出 ECPay AioCheckOut/V5 需要的付款表單欄位（含 CheckMacValue），前端拿去在 WebView
+    組表單 POST 到 action_url。跟建立訂單分開成獨立端點，讓使用者中途關掉付款頁時
+    可以重打這支重新叫出付款頁，不需要重新建立訂單、重複扣庫存。
+    """
+    query = (
+        select(Order)
+        .where(Order.id == order_id, Order.user_id == current_user.id)
+        .options(ORDER_LOAD_OPTIONS)
+    )
+    result = await db.execute(query)
+    order = result.scalars().first()
+    if order is None:
+        raise HTTPException(status_code=404, detail="訂單不存在")
+    if order.status != "pending":
+        raise HTTPException(status_code=409, detail="訂單狀態不是待付款，無法建立付款")
+
+    fields = ecpay_service.build_checkout_params(order)
+    return OrderCheckoutOut(action_url=settings.ECPAY_ACTION_URL, fields=fields)
+
+
+@router.post("/ecpay/callback")
+async def ecpay_callback(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ECPay Server-to-Server 付款結果通知（ReturnURL）。沒有 JWT——是 ECPay 直接呼叫，
+    沒有使用者 session。驗簽失敗／找不到訂單都回應非 "1|OK"，讓 ECPay 依它自己的重試機制
+    再送一次；已經處理過的訂單（status 已是 paid）直接回 "1|OK"，避免 ECPay 重送造成
+    重複發放點數。回應格式（純文字 "1|OK"）是 ECPay 的固定規定，不能改。
+    """
+    form = await request.form()
+    params = dict(form)
+
+    if not ecpay_service.verify_check_mac_value(
+        params, settings.ECPAY_HASH_KEY, settings.ECPAY_HASH_IV
+    ):
+        print(f"DEBUG: ECPay callback 簽章驗證失敗: {params}")
+        return PlainTextResponse("0|CheckMacValueError")
+
+    merchant_trade_no = params.get("MerchantTradeNo")
+    query = select(Order).where(Order.merchant_trade_no == merchant_trade_no)
+    result = await db.execute(query)
+    order = result.scalars().first()
+    if order is None:
+        print(f"DEBUG: ECPay callback 找不到對應訂單: {merchant_trade_no}")
+        return PlainTextResponse("0|OrderNotFound")
+
+    if order.status == "paid":
+        return PlainTextResponse("1|OK")
+
+    try:
+        if params.get("RtnCode") == "1":
+            order.status = "paid"
+            order.payment_reference = params.get("TradeNo")
+            order.paid_at = datetime.now(UTC)
+
+            earned_points = loyalty_service.calc_earned_points(order.total_amount)
+            if earned_points > 0:
+                await loyalty_service.earn_points(
+                    db,
+                    order.user_id,
+                    earned_points,
+                    reason=f"網購訂單 #{order.id} 消費回饋",
+                    related_order_id=order.id,
+                )
+        else:
+            order.status = "failed"
+
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 處理 ECPay callback 失敗: {e}")
+        return PlainTextResponse("0|ProcessError")
+
+    return PlainTextResponse("1|OK")
