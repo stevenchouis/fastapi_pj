@@ -319,6 +319,21 @@ async def create_order_checkout(
     組出 ECPay AioCheckOut/V5 需要的付款表單欄位（含 CheckMacValue），前端拿去在 WebView
     組表單 POST 到 action_url。跟建立訂單分開成獨立端點，讓使用者中途關掉付款頁時
     可以重打這支重新叫出付款頁，不需要重新建立訂單、重複扣庫存。
+
+    2026-09-15 實機測試發現：ECPay 會拒絕重複送出同一個 MerchantTradeNo（顯示「訂單編號
+    重複」），所以不能像原本那樣每次都沿用 Order.merchant_trade_no 建立當下那組固定值——
+    只要同一筆訂單重打過一次這支（不論是使用者主動點「繼續付款」重試，還是畫面重複觸發），
+    第二次一定會被 ECPay 擋下。改成每次呼叫都重新產生一組新的 MerchantTradeNo 並覆蓋回
+    Order.merchant_trade_no（Order.id 才是我方永遠不變的內部主鍵），/ecpay/callback
+    永遠用「當下這組」merchant_trade_no 反查訂單，不假設訂單一輩子只有一個固定值。
+    這裡先在 commit 前就用記憶體中已更新好新值的 order 物件組付款欄位，避免 commit 後
+    session 把屬性 expire 掉又要重新查詢的 MissingGreenlet 坑。
+
+    已知的殘餘風險（低機率，比照 ecpay_callback 對「訂單已取消」的處理方式，選擇記錄而非
+    完全杜絕）：如果使用者對同一筆訂單前後打開兩個付款頁（例如第一個沒關掉又重試一次），
+    舊的那組 MerchantTradeNo 之後才被使用者拿去完成付款，callback 進來時會因為訂單已經
+    被覆寫成新的 MerchantTradeNo 而查無對應訂單，回應 "0|OrderNotFound"（已有 log 記錄，
+    需要人工核對）。正常情境下重試就是放棄舊付款頁，這個風險機率很低。
     """
     query = (
         select(Order)
@@ -332,7 +347,16 @@ async def create_order_checkout(
     if order.status != "pending":
         raise HTTPException(status_code=409, detail="訂單狀態不是待付款，無法建立付款")
 
+    order.merchant_trade_no = _generate_merchant_trade_no()
     fields = ecpay_service.build_checkout_params(order)
+
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 更新 MerchantTradeNo 失敗: {e}")
+        raise HTTPException(status_code=500, detail="建立付款失敗，請重試")
+
     return OrderCheckoutOut(action_url=settings.ECPAY_ACTION_URL, fields=fields)
 
 
