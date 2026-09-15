@@ -19,7 +19,9 @@ class DineInOrderCreate(BaseModel):
 
     table_id: int
     items: List[DineInOrderItemCreate] = Field(min_length=1)
-    # 要折抵的點數（可選），規則同 /orders：1 點 = NT$1，單筆最高折抵訂單金額 50%
+    # 要折抵的優惠券（可選），規則同 /orders：跟到店核銷是不同通路，直接折抵生效
+    coupon_id: Optional[int] = None
+    # 要折抵的點數（可選），規則同 /orders：1 點 = NT$1，單筆最高折抵「券後金額」50%
     use_points: int = Field(default=0, ge=0)
 
 
@@ -41,6 +43,8 @@ class DineInOrderOut(BaseModel):
     restaurant_id: Optional[int] = None
     status: str
     total_amount: float
+    coupon_id: Optional[int] = None
+    coupon_discount: float = 0
     points_used: int = 0
     points_discount: float = 0
     points_earned: int = 0

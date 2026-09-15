@@ -207,6 +207,13 @@ class Order(Base):
     # total_amount 已經是扣除折抵後、實際要付款的金額
     points_used = Column(Integer, nullable=False, server_default="0")
     points_discount = Column(Numeric(10, 2), nullable=False, server_default="0")
+    # 2026-09 優惠券線上折抵：跟核銷碼（到店給店員掃）是不同通路，直接在下單當下
+    # 驗證這張券屬於此使用者、未使用、未過期後原子性標記為已使用，不產生核銷碼。
+    # coupon_discount 是這筆訂單實際折抵的金額（券面額 clamp 到不超過商品小計），
+    # 0／NULL 代表沒有使用優惠券。折抵順序：先套用券折扣、再用「券後金額」計算
+    # 點數折抵上限，避免兩者疊加算出負的 total_amount（詳見 create_order）
+    coupon_id = Column(Integer, ForeignKey("coupons.id"), nullable=True)
+    coupon_discount = Column(Numeric(10, 2), nullable=False, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     paid_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -290,6 +297,9 @@ class DineInOrder(Base):
     # 這筆訂單折抵用掉的點數／折抵金額，做法比照 Order（0 代表沒有使用點數）
     points_used = Column(Integer, nullable=False, server_default="0")
     points_discount = Column(Numeric(10, 2), nullable=False, server_default="0")
+    # 2026-09 優惠券線上折抵，做法比照 Order.coupon_id/coupon_discount（見該處註解）
+    coupon_id = Column(Integer, ForeignKey("coupons.id"), nullable=True)
+    coupon_discount = Column(Numeric(10, 2), nullable=False, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="dine_in_orders")

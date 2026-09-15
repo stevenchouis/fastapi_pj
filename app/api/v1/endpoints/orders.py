@@ -23,7 +23,7 @@ from app.schemas.order import (
     OrderOut,
     OrderStatusUpdate,
 )
-from app.services import ecpay_service, loyalty_service
+from app.services import coupon_service, ecpay_service, loyalty_service
 from app.services.push_service import send_user_push_notifications
 
 router = APIRouter()
@@ -54,6 +54,8 @@ def _to_order_out(order: Order) -> OrderOut:
         id=order.id,
         status=order.status,
         total_amount=float(order.total_amount),
+        coupon_id=order.coupon_id,
+        coupon_discount=float(order.coupon_discount),
         points_used=order.points_used,
         points_discount=float(order.points_discount),
         points_earned=points_earned,
@@ -100,9 +102,13 @@ async def create_order(
     """
     建立訂單。price/stock 一律以後端這次重新查到的資料為準，不採信前端傳入的金額；
     庫存用「UPDATE ... WHERE stock >= 數量」原子性扣減，任一項商品庫存不足就整張訂單失敗
-    （已扣的其他項目一併 rollback，不會賣出部分商品卻沒建立訂單）。可選的 use_points
-    用來折抵訂單金額（1 點 = NT$1，上限訂單小計 50%），驗證/扣點都跟建立訂單包在
-    同一個 transaction，任一步失敗就整單 rollback（詳見 loyalty_service）。
+    （已扣的其他項目一併 rollback，不會賣出部分商品卻沒建立訂單）。可選的 coupon_id／
+    use_points 皆可折抵訂單金額，順序是先套用優惠券折扣（clamp 到不超過商品小計）、
+    再用「券後金額」計算點數折抵上限（1 點 = NT$1，上限券後金額 50%）——這樣兩者疊加
+    後 total_amount 保證不會是負數。優惠券折抵是直接生效（不產生核銷碼），跟到店核銷
+    是不同通路，共用同一個 Coupon.is_used 欄位的原子性更新，兩邊不會雙重折抵（詳見
+    coupon_service.apply_coupon_for_checkout）。驗證/扣點/扣券都跟建立訂單包在同一個
+    transaction，任一步失敗就整單 rollback。
 
     這裡只建立 pending 狀態的訂單並扣庫存；金流動作（叫出付款頁、驗證付款結果）
     是後續呼叫 POST /{order_id}/checkout 跟 ECPay 打 POST /ecpay/callback 才會發生，
@@ -147,17 +153,47 @@ async def create_order(
                 )
             )
 
+        coupon_discount = Decimal("0")
+        if payload.coupon_id is not None:
+            outcome, discount_amount = await coupon_service.apply_coupon_for_checkout(
+                db, current_user.id, payload.coupon_id
+            )
+            if outcome == "not_found":
+                await db.rollback()
+                raise HTTPException(status_code=404, detail="優惠券不存在")
+            if outcome == "already_used":
+                await db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_code": "coupon_already_used",
+                        "message": "此優惠券已使用",
+                    },
+                )
+            if outcome == "expired":
+                await db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_code": "coupon_expired",
+                        "message": "此優惠券已過期",
+                    },
+                )
+            coupon_discount = min(discount_amount, subtotal)
+
+        after_coupon = subtotal - coupon_discount
+
         points_used = payload.use_points
         points_discount = Decimal("0")
         if points_used > 0:
-            max_points = loyalty_service.calc_max_redeemable_points(subtotal)
+            max_points = loyalty_service.calc_max_redeemable_points(after_coupon)
             if points_used > max_points:
                 await db.rollback()
                 raise HTTPException(
                     status_code=400,
                     detail={
                         "error_code": "points_cap_exceeded",
-                        "message": f"超過訂單金額 50% 折抵上限，最多可用 {max_points} 點",
+                        "message": f"超過可折抵金額 50% 上限，最多可用 {max_points} 點",
                     },
                 )
             points_discount = Decimal(points_used) * loyalty_service.REDEEM_POINT_VALUE
@@ -165,7 +201,9 @@ async def create_order(
         order = Order(
             user_id=current_user.id,
             status="pending",
-            total_amount=subtotal - points_discount,
+            total_amount=after_coupon - points_discount,
+            coupon_id=payload.coupon_id,
+            coupon_discount=coupon_discount,
             points_used=points_used,
             points_discount=points_discount,
             payment_provider="ecpay",

@@ -17,7 +17,7 @@ from app.schemas.dine_in_order import (
     DineInOrderOut,
     DineInOrderStatusUpdate,
 )
-from app.services import loyalty_service
+from app.services import coupon_service, loyalty_service
 from app.services.push_service import send_role_push_notifications
 
 router = APIRouter()
@@ -43,6 +43,8 @@ def _to_order_out(order: DineInOrder) -> DineInOrderOut:
         restaurant_id=order.restaurant_id,
         status=order.status,
         total_amount=float(order.total_amount),
+        coupon_id=order.coupon_id,
+        coupon_discount=float(order.coupon_discount),
         points_used=order.points_used,
         points_discount=float(order.points_discount),
         points_earned=points_earned,
@@ -70,15 +72,15 @@ async def create_dine_in_order(
     """
     建立堂食點餐訂單。跟網購 /orders 是分開的流程：這裡沒有庫存概念（賣完由店員
     手動關閉 is_available），所以不需要原子性扣庫存，但價格一律以資料庫當下的值
-    為準，不採信前端顯示的金額。可選的 use_points 用來折抵訂單金額，規則跟
-    /orders 相同（1 點 = NT$1，上限訂單小計 50%），驗證/扣點都跟建立訂單包在同一個
-    transaction。
+    為準，不採信前端顯示的金額。可選的 coupon_id／use_points 用來折抵訂單金額，
+    規則跟 /orders 相同，驗證/扣券/扣點都跟建立訂單包在同一個 transaction。
 
     桌號來自 table_id 反查的 Table（2026-09 多門市支援 Phase 3：不再接受純文字
     table_number，見 DineInOrderCreate）。桌位不存在、或存在但沒有 restaurant_id
     （多門市上線前的舊資料，從未被指派門市，等同不可訂）一律回 404——這種桌位
     就算收單也會在店員接單列表（依 restaurant_id scope）裡永遠看不到，讓它能下
-    單沒有意義。
+    單沒有意義。可選的 coupon_id／use_points 折抵順序跟 /orders 相同：先套用
+    優惠券折扣（clamp 到不超過商品小計），再用「券後金額」計算點數折抵上限。
     """
     table_result = await db.execute(select(Table).where(Table.id == payload.table_id))
     table = table_result.scalars().first()
@@ -123,28 +125,61 @@ async def create_dine_in_order(
             )
         )
 
-    points_used = payload.use_points
-    points_discount = Decimal("0")
-    if points_used > 0:
-        max_points = loyalty_service.calc_max_redeemable_points(subtotal)
-        if points_used > max_points:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error_code": "points_cap_exceeded",
-                    "message": f"超過訂單金額 50% 折抵上限，最多可用 {max_points} 點",
-                },
-            )
-        points_discount = Decimal(points_used) * loyalty_service.REDEEM_POINT_VALUE
-
     try:
+        coupon_discount = Decimal("0")
+        if payload.coupon_id is not None:
+            outcome, discount_amount = await coupon_service.apply_coupon_for_checkout(
+                db, current_user.id, payload.coupon_id
+            )
+            if outcome == "not_found":
+                await db.rollback()
+                raise HTTPException(status_code=404, detail="優惠券不存在")
+            if outcome == "already_used":
+                await db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_code": "coupon_already_used",
+                        "message": "此優惠券已使用",
+                    },
+                )
+            if outcome == "expired":
+                await db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_code": "coupon_expired",
+                        "message": "此優惠券已過期",
+                    },
+                )
+            coupon_discount = min(discount_amount, subtotal)
+
+        after_coupon = subtotal - coupon_discount
+
+        points_used = payload.use_points
+        points_discount = Decimal("0")
+        if points_used > 0:
+            max_points = loyalty_service.calc_max_redeemable_points(after_coupon)
+            if points_used > max_points:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error_code": "points_cap_exceeded",
+                        "message": f"超過可折抵金額 50% 上限，最多可用 {max_points} 點",
+                    },
+                )
+            points_discount = Decimal(points_used) * loyalty_service.REDEEM_POINT_VALUE
+
         order = DineInOrder(
             user_id=current_user.id,
             table_number=table_number,
             table_id=payload.table_id,
             restaurant_id=restaurant_id,
             status="pending",
-            total_amount=subtotal - points_discount,
+            total_amount=after_coupon - points_discount,
+            coupon_id=payload.coupon_id,
+            coupon_discount=coupon_discount,
             points_used=points_used,
             points_discount=points_discount,
         )
