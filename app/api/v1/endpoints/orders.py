@@ -249,6 +249,66 @@ async def create_order(
     return _to_order_out(order)
 
 
+@router.post("/{order_id}/cancel", response_model=OrderOut)
+async def cancel_order(
+    order_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_user),
+):
+    """
+    使用者主動取消尚未付款的訂單（僅限自己名下、status="pending"）。
+
+    背景：coupon_id/use_points 是在建立訂單當下就直接生效（優惠券標記已使用、
+    點數已扣除、庫存已扣減），但如果之後付款沒有成功（ECPay 顯示錯誤、使用者
+    中途放棄），訂單會卡在 pending，而券/點數/庫存已經回不去——這支端點負責
+    在使用者主動取消時把三者都退還：優惠券改回未使用（coupon_service.release_coupon）、
+    點數用 reverse_redeem 交易補回餘額（loyalty_service.reverse_redeem_points）、
+    商品庫存加回去，訂單狀態改成 cancelled。
+    """
+    query = (
+        select(Order)
+        .where(Order.id == order_id, Order.user_id == current_user.id)
+        .options(ORDER_LOAD_OPTIONS)
+    )
+    result = await db.execute(query)
+    order = result.scalars().first()
+    if order is None:
+        raise HTTPException(status_code=404, detail="訂單不存在")
+    if order.status != "pending":
+        raise HTTPException(status_code=409, detail="只有待付款的訂單可以取消")
+
+    try:
+        for item in order.items:
+            await db.execute(
+                update(ProductModel)
+                .where(ProductModel.id == item.product_id)
+                .values(stock=ProductModel.stock + item.quantity)
+            )
+
+        if order.coupon_id is not None:
+            await coupon_service.release_coupon(db, order.coupon_id)
+
+        if order.points_used > 0:
+            await loyalty_service.reverse_redeem_points(
+                db,
+                current_user.id,
+                order.points_used,
+                reason=f"訂單取消退還：訂單 #{order_id}",
+                related_order_id=order_id,
+            )
+
+        order.status = "cancelled"
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 取消訂單失敗: {e}")
+        raise HTTPException(status_code=500, detail="取消訂單失敗")
+
+    query = select(Order).where(Order.id == order_id).options(ORDER_LOAD_OPTIONS)
+    result = await db.execute(query)
+    return _to_order_out(result.scalars().first())
+
+
 @router.post("/{order_id}/checkout", response_model=OrderCheckoutOut)
 async def create_order_checkout(
     order_id: int,
@@ -315,6 +375,19 @@ async def ecpay_callback(
         return PlainTextResponse("0|OrderNotFound")
 
     if order.status == "paid":
+        return PlainTextResponse("1|OK")
+
+    if order.status == "cancelled":
+        # 使用者已經呼叫過 POST /{id}/cancel（優惠券/點數/庫存都已經退還了），但 ECPay
+        # 這通遲到的回調卻說付款成功——代表錢實際上還是有可能已經入帳，只是跟我方的
+        # 取消狀態對不上。不能再把它標成 paid（那樣等於使用者的券/點數退了、卻又生出
+        # 一筆已付款訂單，變相重複拿到折抵），但也不能默默吞掉，印一行醒目的 log 留給
+        # 人工核對是否要跟 ECPay 核對退款，仍回 "1|OK" 讓 ECPay 不要一直重送。
+        if params.get("RtnCode") == "1":
+            print(
+                f"WARNING: ECPay callback 回報付款成功，但訂單 #{order.id}"
+                f"（{merchant_trade_no}）已被使用者取消，需人工核對是否要退款"
+            )
         return PlainTextResponse("1|OK")
 
     try:

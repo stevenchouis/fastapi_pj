@@ -80,3 +80,18 @@ async def apply_coupon_for_checkout(
         return "already_used", None
     (discount_amount,) = row
     return "ok", Decimal(str(discount_amount))
+
+
+async def release_coupon(db: AsyncSession, coupon_id: int) -> None:
+    """
+    退還一張先前用 apply_coupon_for_checkout 標記為已使用的優惠券（訂單付款沒有成功、
+    或使用者主動取消訂單）：改回 is_used=False、清掉 used_at，讓它可以再被使用一次。
+    不會自己 commit，交易邊界由呼叫端控制。只有這張券真的是「已使用」狀態才會改動
+    （避免誤把一張本來就沒被這筆訂單用掉、或已被其他方式核銷的券狀態弄亂）。
+    """
+    await db.execute(
+        update(Coupon)
+        .where(Coupon.id == coupon_id)
+        .where(Coupon.is_used.is_(True))
+        .values(is_used=False, used_at=None)
+    )

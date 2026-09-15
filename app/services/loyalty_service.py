@@ -127,3 +127,44 @@ async def redeem_points(
         )
     )
     return True
+
+
+async def reverse_redeem_points(
+    db: AsyncSession,
+    user_id: int,
+    amount: int,
+    reason: str,
+    related_order_id: int | None = None,
+    related_dine_in_order_id: int | None = None,
+    restaurant_id: int | None = None,
+) -> None:
+    """
+    退還一筆先前的折抵（訂單建立時扣了點數，但付款沒有成功／使用者取消訂單）：
+    原子性加回 User.loyalty_balance，並補一筆 type="reverse_redeem" 的交易紀錄，
+    跟 earn/redeem/expire 共用「type 決定異動方向」的不變量（見 CLAUDE.md 紅利點數一節）。
+    不會自己 commit，交易邊界由呼叫端控制。
+
+    已知簡化：不會反向補回原本 redeem 時依 FIFO 扣減的各筆 earn 紀錄的 remaining_amount，
+    所以這筆退還的點數之後不會被 expire_loyalty_points_task 收回（永遠不過期）。
+    對使用者是偏寬鬆而非有安全疑慮的方向，暫不處理；真的要精確重建 remaining_amount
+    需要在 redeem_points 當下記錄「這次扣了哪幾筆 earn 各多少」，目前沒有這個資料。
+    """
+    if amount <= 0:
+        return
+
+    await db.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(loyalty_balance=User.loyalty_balance + amount)
+    )
+    db.add(
+        LoyaltyTransaction(
+            user_id=user_id,
+            type="reverse_redeem",
+            amount=amount,
+            reason=reason,
+            related_order_id=related_order_id,
+            related_dine_in_order_id=related_dine_in_order_id,
+            restaurant_id=restaurant_id,
+        )
+    )
