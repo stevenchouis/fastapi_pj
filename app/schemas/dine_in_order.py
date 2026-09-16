@@ -38,6 +38,10 @@ class DineInOrderItemOut(BaseModel):
 
 class DineInOrderOut(BaseModel):
     id: int
+    # 2026-09 staff-scanner 提出：店員接單列表原本完全看不出一筆訂單是誰下的，
+    # 曾經誤把別人測試帳號留下的舊訂單當成自己的。刻意只回傳 user_id（數字），
+    # 不回傳 email/姓名，避免店員看到顧客個資——單純讓人能分辨「是不是同一顧客」
+    user_id: int
     table_number: str
     table_id: Optional[int] = None
     restaurant_id: Optional[int] = None

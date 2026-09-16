@@ -38,6 +38,7 @@ def _to_order_out(order: DineInOrder) -> DineInOrderOut:
     )
     return DineInOrderOut(
         id=order.id,
+        user_id=order.user_id,
         table_number=order.table_number,
         table_id=order.table_id,
         restaurant_id=order.restaurant_id,
