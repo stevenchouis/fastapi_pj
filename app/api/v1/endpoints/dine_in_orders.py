@@ -48,6 +48,7 @@ def _to_order_out(order: DineInOrder) -> DineInOrderOut:
         points_used=order.points_used,
         points_discount=float(order.points_discount),
         points_earned=points_earned,
+        payment_method=order.payment_method,
         created_at=order.created_at,
         items=[
             DineInOrderItemOut(
@@ -295,9 +296,13 @@ async def update_dine_in_order_status(
     current_user=Depends(deps.get_current_staff_user),
 ):
     """
-    店員標記訂單已完成／已出餐，只有 role="staff" 能呼叫。標記為 completed 時，
-    順便依訂單實付金額（total_amount，已扣點數折抵）發放消費回饋點數——用
-    order.status 是否已經是 completed 判斷，避免同一張單重複點擊而重複發點。
+    店員標記訂單狀態，只有 role="staff" 能呼叫。2026-09 堂食付款/核銷流程：
+    pending→served（用餐完畢，等待收款）→completed（已收款，終點，觸發點數
+    入帳）,兩個轉換都必須照順序、不能跳過（目前狀態不符合就回 409）。
+    轉成 completed 時強制要求帶 payment_method（沒帶回 400），並依訂單實付
+    金額（total_amount，已扣點數折抵，付款當下不會重新選點數/優惠券）發放
+    消費回饋點數——用 order.status 是否已經是 completed 判斷，避免同一張單
+    重複點擊而重複發點（這段判斷邏輯完全沿用先前就有、已測試過的寫法不變）。
     """
     query = (
         select(DineInOrder)
@@ -309,9 +314,19 @@ async def update_dine_in_order_status(
     if not order:
         raise HTTPException(status_code=404, detail="訂單不存在")
 
+    if payload.status == "served" and order.status != "pending":
+        raise HTTPException(status_code=409, detail="只有候餐中的訂單可以標記為用餐完畢")
+    if payload.status == "completed":
+        if order.status != "served":
+            raise HTTPException(status_code=409, detail="只有等待收款的訂單可以標記為已收款")
+        if payload.payment_method is None:
+            raise HTTPException(status_code=400, detail="標記已收款需要帶收款方式")
+
     try:
         newly_completed = payload.status == "completed" and order.status != "completed"
         order.status = payload.status
+        if payload.status == "completed":
+            order.payment_method = payload.payment_method
         if newly_completed:
             earned = loyalty_service.calc_earned_points(order.total_amount)
             await loyalty_service.earn_points(

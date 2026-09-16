@@ -48,6 +48,7 @@ class DineInOrderOut(BaseModel):
     points_used: int = 0
     points_discount: float = 0
     points_earned: int = 0
+    payment_method: Optional[str] = None
     created_at: datetime
     items: List[DineInOrderItemOut]
 
@@ -56,5 +57,14 @@ class DineInOrderOut(BaseModel):
 
 
 class DineInOrderStatusUpdate(BaseModel):
-    # 目前只開放標記完成；之後如果要支援更細的現場流程（備餐中等）再加合法值
-    status: Literal["completed"]
+    """
+    2026-09 堂食付款/核銷流程：pending→served（出餐/用餐完畢，等待收款）→
+    completed（已收款，終點，觸發點數入帳）。兩個轉換都只能照順序、不能跳過
+    （endpoint 端會檢查目前狀態，不符合回 409）。payment_method 只有轉成
+    completed 時才需要帶（endpoint 端驗證，沒帶回 400），轉 served 不需要、
+    帶了也會被忽略。付款當下不會重新選點數/優惠券——那是建單當下就已經套用、
+    算進 total_amount 的，這裡只是記錄收款方式並確認收款完成。
+    """
+
+    status: Literal["served", "completed"]
+    payment_method: Optional[Literal["cash", "jkopay"]] = None

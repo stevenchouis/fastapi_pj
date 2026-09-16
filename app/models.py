@@ -295,8 +295,12 @@ class DineInOrder(Base):
     # 都 join Table 表
     table_id = Column(Integer, ForeignKey("tables.id"), nullable=True)
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"), index=True, nullable=True)
-    # pending / preparing / served / cancelled——現場出餐流程狀態，
-    # 跟網購 Order.status 的付款狀態語意不同，故分開兩張表，不共用同一個 status 欄位
+    # pending（候餐）/ served（用餐完畢，等待收款）/ completed（已收款，終點）——
+    # 跟網購 Order.status 的付款狀態語意不同，故分開兩張表，不共用同一個 status 欄位。
+    # 2026-09 堂食付款/核銷流程：completed 從「出餐完成」改為「已收款」的終點，
+    # 中間插入 served 這個等待收款的狀態；「completed 觸發點數入帳」這段既有邏輯
+    # 完全不變（判斷式看的是「還不是 completed」，不是「一定要從哪個狀態來」），
+    # 只是現在強制要求先經過 served 才能轉 completed（PATCH 端點裡做狀態機檢查）
     status = Column(String, nullable=False, default="pending")
     total_amount = Column(Numeric(10, 2), nullable=False)
     # 這筆訂單折抵用掉的點數／折抵金額，做法比照 Order（0 代表沒有使用點數）
@@ -305,6 +309,9 @@ class DineInOrder(Base):
     # 2026-09 優惠券線上折抵，做法比照 Order.coupon_id/coupon_discount（見該處註解）
     coupon_id = Column(Integer, ForeignKey("coupons.id"), nullable=True)
     coupon_discount = Column(Numeric(10, 2), nullable=False, server_default="0")
+    # 2026-09 堂食付款/核銷流程：收款方式，"cash"/"jkopay"（跟 StoreCheckout 同型別/
+    # 命名慣例，純記錄不接真實金流），收款前（status 還不是 completed）是 NULL
+    payment_method = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="dine_in_orders")
