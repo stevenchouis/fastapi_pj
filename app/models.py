@@ -48,6 +48,11 @@ class User(Base):
     # （2026-09 跟 mynotification/staff-scanner 三方確認過的業務規則，不是關聯表）；
     # nullable 是為了向下相容既有帳號跟顧客帳號（顧客沒有門市歸屬）
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=True)
+    # 2026-09 會員條碼/QR Code 門市收銀：限時會員辨識碼，做法比照 Coupon 的
+    # redeem_code_hash/redeem_code_expires_at（只存 hash，不存明文；沒產生過、
+    # 已被使用、或已重新產生過就是 None）。使用者手動按按鈕產生，不是自動輪替。
+    member_code_hash = Column(String, nullable=True, index=True)
+    member_code_expires_at = Column(DateTime(timezone=True), nullable=True)
 
     # 建立與 PushToken 的關聯
     push_tokens = relationship(
@@ -372,6 +377,11 @@ class LoyaltyTransaction(Base):
     related_dine_in_order_id = Column(
         Integer, ForeignKey("dine_in_orders.id"), nullable=True
     )
+    # 2026-09 門市收銀（會員條碼結帳）新增的第三個 related_X_id，跟前兩個對稱，
+    # 讓每種消費來源都能單獨追溯，不共用既有欄位混著記
+    related_store_checkout_id = Column(
+        Integer, ForeignKey("store_checkouts.id"), nullable=True
+    )
     # 2026-09 多門市支援：純記錄/報表用途，標記這筆異動發生在哪個門市（堂食訂單
     # 才有；網購訂單、連鎖層級的禮券發點等沒有門市脈絡就是 NULL）。**不影響餘額
     # 計算或折抵資格**——點數餘額仍是 User.loyalty_balance 單一帳戶層級，任何門市
@@ -380,6 +390,49 @@ class LoyaltyTransaction(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="loyalty_transactions")
+
+
+class StoreCheckout(Base):
+    """
+    2026-09 會員條碼/QR Code 門市收銀：顧客出示會員碼，店員在 staff-scanner 輸入
+    金額、選付款方式（現金/街口支付，皆視為當下已完成付款，沒有像 ECPay 那樣的
+    非同步中繼狀態，所以不需要 status="pending" 之類的中繼態或取消/退還機制）。
+    刻意獨立成一張表、不塞進 Order——Order 幾乎每個欄位（merchant_trade_no、
+    payment_reference、OrderItem 的 product_id NOT NULL）都是繞著 ECPay 線上金流
+    +商品項目設計的，門市收銀完全沒有這些概念，硬塞會出現一堆語意不明的 nullable
+    欄位，跟當初 DineInOrder 沒有沿用 Order 是同一個理由。
+    """
+
+    __tablename__ = "store_checkouts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    # 處理這筆結帳的店員——跟 Order/DineInOrder 不同，那兩個是顧客自助操作，
+    # 這裡是店員代替顧客操作金流，事後要能追溯是哪位店員經手
+    staff_user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    # 全新的表、沒有既有資料要相容，這裡直接設 nullable=False——送出結帳的
+    # 端點本來就要求登入店員必須已被指定門市（帳號尚未指定所屬門市回 400），
+    # 不會有 restaurant_id 缺值的合法情境
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), index=True, nullable=False)
+    # 店員手動輸入的原始金額——這裡沒有商品/庫存可以當金額的權威來源，
+    # 跟 Order/DineInOrder 由後端依商品價格重新計算不同，是刻意的信任層級
+    # （比照 PATCH /products/{id} 店員可以直接改價格/庫存）
+    subtotal = Column(Numeric(10, 2), nullable=False)
+    # "cash" / "jkopay"，純字串沒有 DB 層 enum，比照 Order.status 慣例
+    payment_method = Column(String, nullable=False)
+    coupon_id = Column(Integer, ForeignKey("coupons.id"), nullable=True)
+    coupon_discount = Column(Numeric(10, 2), nullable=False, server_default="0")
+    points_used = Column(Integer, nullable=False, server_default="0")
+    points_discount = Column(Numeric(10, 2), nullable=False, server_default="0")
+    # 折抵後實付金額，付款當下就是最終值（沒有中繼付款狀態）
+    total_amount = Column(Numeric(10, 2), nullable=False)
+    # 先固定 "completed"，多留這個欄位是為了之後如果要做「店員打錯金額作廢」
+    # 這類需求時不用再 migration，目前沒有任何程式碼會寫入其他值
+    status = Column(String, nullable=False, server_default="completed")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", foreign_keys=[user_id])
+    staff_user = relationship("User", foreign_keys=[staff_user_id])
 
 
 class MagicLinkToken(Base):

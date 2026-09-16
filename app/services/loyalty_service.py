@@ -35,6 +35,7 @@ async def earn_points(
     reason: str,
     related_order_id: int | None = None,
     related_dine_in_order_id: int | None = None,
+    related_store_checkout_id: int | None = None,
     restaurant_id: int | None = None,
 ) -> None:
     """
@@ -59,6 +60,7 @@ async def earn_points(
             reason=reason,
             related_order_id=related_order_id,
             related_dine_in_order_id=related_dine_in_order_id,
+            related_store_checkout_id=related_store_checkout_id,
             restaurant_id=restaurant_id,
         )
     )
@@ -76,6 +78,7 @@ async def redeem_points(
     reason: str,
     related_order_id: int | None = None,
     related_dine_in_order_id: int | None = None,
+    related_store_checkout_id: int | None = None,
     restaurant_id: int | None = None,
 ) -> bool:
     """
@@ -123,6 +126,7 @@ async def redeem_points(
             reason=reason,
             related_order_id=related_order_id,
             related_dine_in_order_id=related_dine_in_order_id,
+            related_store_checkout_id=related_store_checkout_id,
             restaurant_id=restaurant_id,
         )
     )
@@ -136,6 +140,7 @@ async def reverse_redeem_points(
     reason: str,
     related_order_id: int | None = None,
     related_dine_in_order_id: int | None = None,
+    related_store_checkout_id: int | None = None,
     restaurant_id: int | None = None,
 ) -> None:
     """
@@ -165,6 +170,7 @@ async def reverse_redeem_points(
             reason=reason,
             related_order_id=related_order_id,
             related_dine_in_order_id=related_dine_in_order_id,
+            related_store_checkout_id=related_store_checkout_id,
             restaurant_id=restaurant_id,
         )
     )
