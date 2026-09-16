@@ -2,6 +2,7 @@
 import hashlib
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import List
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select, update
@@ -47,6 +48,22 @@ def _to_store_checkout_out(checkout: StoreCheckout) -> StoreCheckoutOut:
         status=checkout.status,
         created_at=checkout.created_at,
     )
+
+
+@router.get("/me", response_model=List[StoreCheckoutOut])
+async def get_my_store_checkouts(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_user),
+):
+    """取得目前登入使用者的門市收銀消費紀錄（新到舊排序），格式跟送出結帳的回應一致。"""
+    query = (
+        select(StoreCheckout)
+        .where(StoreCheckout.user_id == current_user.id)
+        .order_by(StoreCheckout.created_at.desc())
+    )
+    result = await db.execute(query)
+    checkouts = result.scalars().all()
+    return [_to_store_checkout_out(c) for c in checkouts]
 
 
 @router.post("/lookup", response_model=MemberCodeLookupOut)
