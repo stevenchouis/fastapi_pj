@@ -311,6 +311,7 @@ async def update_dine_in_order_status(
         select(DineInOrder)
         .where(DineInOrder.id == dine_in_order_id)
         .options(*DINE_IN_ORDER_LOAD_OPTIONS)
+        .with_for_update()
     )
     result = await db.execute(query)
     order = result.scalars().first()
@@ -362,26 +363,30 @@ async def cancel_dine_in_order(
     current_user=Depends(deps.get_current_staff_user),
 ):
     """
-    店員標記「已出餐但顧客沒付款就離開」的收尾機制，只有 role="staff" 能呼叫
-    （跟 /status 不同，這支是店員代顧客結案，不是顧客自己取消）。僅允許
-    served→cancelled，其餘狀態回 409——刻意縮小範圍，只處理「已出餐未付款」
-    這個情境，不像 /orders/{id}/cancel 允許從 pending 取消（堂食的 pending
-    單本來就沒有對應的收尾需求）。退款邏輯比照 /orders/{id}/cancel 同一套：
-    優惠券改回未使用、點數用 reverse_redeem 補回餘額；堂食沒有庫存概念
-    （MenuItem 沒有 stock），不需要回補庫存。不檢查呼叫者的 restaurant_id
-    是否跟訂單一致——比照既有 /status 端點的慣例，同樣不做這層限制。
+    店員作廢尚未收款的訂單，只有 role="staff" 能呼叫（跟 /status 不同，這支是
+    店員代顧客結案，不是顧客自己取消）。允許 pending（點錯餐／缺料／選錯桌）與
+    served（已出餐沒付款就離開）→cancelled，completed／cancelled 回 409。
+    退款邏輯比照 /orders/{id}/cancel 同一套：優惠券改回未使用、點數用
+    reverse_redeem 補回餘額；堂食沒有庫存概念（MenuItem 沒有 stock），不需要
+    回補庫存；賺點只發生在 completed，pending/served 階段沒有點數要收回。
+    不檢查呼叫者的 restaurant_id 是否跟訂單一致——比照既有 /status 端點的慣例，
+    同樣不做這層限制。用 SELECT ... FOR UPDATE 鎖住訂單再檢查狀態（/status 也
+    一樣），避免店員同時按「已收款」和「作廢」時，兩邊都讀到舊狀態而重複入帳
+    （已發回饋點數又退點數）。
     """
     query = (
         select(DineInOrder)
         .where(DineInOrder.id == dine_in_order_id)
         .options(*DINE_IN_ORDER_LOAD_OPTIONS)
+        .with_for_update()
     )
     result = await db.execute(query)
     order = result.scalars().first()
     if not order:
         raise HTTPException(status_code=404, detail="訂單不存在")
-    if order.status != "served":
-        raise HTTPException(status_code=409, detail="只有等待收款的訂單可以標記為取消")
+    if order.status not in ("pending", "served"):
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="只有候餐中或等待收款的訂單可以取消")
 
     try:
         if order.coupon_id is not None:
