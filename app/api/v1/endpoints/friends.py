@@ -64,7 +64,14 @@ async def _load_friendship(db: AsyncSession, friendship_id: int) -> Friendship |
     return result.scalars().first()
 
 
-def _push(background_tasks: BackgroundTasks, user_id: int, title: str, body: str, data: dict):
+def _push(
+    background_tasks: BackgroundTasks,
+    user_id: int,
+    title: str,
+    body: str,
+    data: dict,
+    image_url: str | None = None,
+):
     # 比照 push_service 既有慣例：session 已經 commit 完才觸發，不佔用交易時間
     background_tasks.add_task(
         send_user_push_notifications,
@@ -74,6 +81,7 @@ def _push(background_tasks: BackgroundTasks, user_id: int, title: str, body: str
         title,
         body,
         data,
+        image_url,
     )
 
 
@@ -160,6 +168,7 @@ async def create_friend_request(
     """
     me = current_user.id
     my_name = display_name(current_user)
+    my_avatar = current_user.avatar_url  # 推播帶送出者頭貼，commit 前先存起來
     target_id = payload.target_user_id
     if target_id == me:
         raise HTTPException(status_code=400, detail="不能加自己為好友")
@@ -236,6 +245,7 @@ async def create_friend_request(
             title,
             body,
             {"type": notify_type, "screen": "Friends", "friendship_id": friendship_id},
+            my_avatar,
         )
 
     return _to_friendship_out(await _load_friendship(db, friendship_id), me)
@@ -250,6 +260,7 @@ async def _respond_to_request(
 ) -> FriendshipOut:
     me = current_user.id
     my_name = display_name(current_user)
+    my_avatar = current_user.avatar_url
     row = await _load_friendship(db, friendship_id)
     # 不是這對關係的成員、或邀請是我自己發的（不能自己接受自己的邀請）一律當作不存在
     if row is None or me not in (row.user_a_id, row.user_b_id) or row.requester_id == me:
@@ -285,6 +296,7 @@ async def _respond_to_request(
                 "screen": "Friends",
                 "friendship_id": friendship_id,
             },
+            my_avatar,
         )
     return _to_friendship_out(result, me)
 
@@ -330,6 +342,7 @@ async def send_greeting(
     """
     me = current_user.id
     my_name = display_name(current_user)
+    my_avatar = current_user.avatar_url
     row = await _load_friendship(db, friendship_id)
     if row is None or me not in (row.user_a_id, row.user_b_id):
         raise HTTPException(status_code=404, detail="好友關係不存在")
@@ -343,5 +356,6 @@ async def send_greeting(
         f"💬 {my_name}",
         payload.message,
         {"type": "friend_greeting", "screen": "Friends", "friendship_id": friendship_id},
+        my_avatar,
     )
     return {"ok": True}

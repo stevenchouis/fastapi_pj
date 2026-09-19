@@ -11,15 +11,51 @@ logger = logging.getLogger(__name__)
 push_client = PushClient()
 
 
+class _RichPushMessage(PushMessage):
+    """
+    exponent_server_sdk 2.2.0 的 PushMessage 沒有圖片欄位，依 SDK 文件建議繼承並
+    覆寫 get_payload()，有圖片時多帶 richContent（Expo Push API，Android 顯示
+    右側縮圖／展開大圖）。沒有圖片的通知不會用到這個類別，payload 跟以前完全一樣。
+    """
+
+    def __new__(cls, *args, image_url: str, **kwargs):
+        self = super().__new__(cls, *args, **kwargs)
+        self.image_url = image_url
+        return self
+
+    def get_payload(self):
+        payload = super().get_payload()
+        payload["richContent"] = {"image": self.image_url}
+        return payload
+
+
+def _safe_image_url(image_url: Optional[str]) -> Optional[str]:
+    # 只接受 https；其他（空字串、http、相對路徑）一律當作沒圖，推播照常送出。
+    # 不做 HEAD 檢查：圖片是 Android 裝置收到通知時才自己下載，網址失效只會變成
+    # 沒圖的通知；預先檢查只會拖慢背景任務又多一個失敗點
+    if image_url and image_url.startswith("https://"):
+        return image_url
+    if image_url:
+        logger.warning(f"推播圖片網址不是 https，略過圖片: {image_url[:80]}")
+    return None
+
+
 async def _publish_to_tokens(
-    token_list: list[str], title: str, body: str, data: Optional[dict] = None
+    token_list: list[str],
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+    image_url: Optional[str] = None,
 ):
     if not token_list:
         return
 
+    image_url = _safe_image_url(image_url)
+    message_cls = _RichPushMessage if image_url else PushMessage
+    extra = {"image_url": image_url} if image_url else {}
     loop = asyncio.get_event_loop()
     for token in token_list:
-        msg = PushMessage(
+        msg = message_cls(
             to=token,
             title=title,
             body=body,
@@ -30,6 +66,7 @@ async def _publish_to_tokens(
             # channel（見 app/_layout.tsx 的 setNotificationChannelAsync），這裡
             # 要對應同一個名稱，Expo 才會把 channelId 一起送給 FCM
             channel_id="default",
+            **extra,
         )
         try:
             # 使用 executor 執行同步發送
@@ -49,8 +86,12 @@ async def send_user_push_notifications(
     title: str,
     body: str,
     data: Optional[dict] = None,
+    image_url: Optional[str] = None,
 ):
     """
+    image_url（選填，https）有值時 Android 通知會帶右側縮圖／大圖，只影響推播本身，
+    不會存進 NotificationLog。
+
     app_id 是必填的目標 App（"mynotification" / "staff-scanner"）——2026-09 起
     PushToken 開始記錄每個 token 屬於哪個 App（見 CLAUDE.md 推播通知一節的
     Phase 1/2/3 rollout），這裡只送給該使用者名下屬於這個 App 的 token，
@@ -82,7 +123,7 @@ async def send_user_push_notifications(
         return
 
     # 第二步：在資料庫連線關閉後，才執行耗時的網路推播
-    await _publish_to_tokens(token_list, title, body, data)
+    await _publish_to_tokens(token_list, title, body, data, image_url)
 
 
 async def send_favorite_users_notifications(
@@ -92,8 +133,11 @@ async def send_favorite_users_notifications(
     title: str,
     body: str,
     data: Optional[dict] = None,
+    image_url: Optional[str] = None,
 ):
     """
+    image_url（選填，https）用法同 send_user_push_notifications。
+
     推播給收藏了某商品、且該 token 屬於 app_id 這個 App 的所有使用者
     （用於商品到貨/降價通知，目前只會傳 "mynotification"）。
     每個收藏者各留一筆 NotificationLog，讓他們自己 App 內的通知歷史看得到
@@ -131,7 +175,7 @@ async def send_favorite_users_notifications(
         logger.info(f"product_id={product_id} 的收藏者在 app_id={app_id} 都沒有可用 Token")
         return
 
-    await _publish_to_tokens(token_list, title, body, data)
+    await _publish_to_tokens(token_list, title, body, data, image_url)
 
 
 async def send_role_push_notifications(
@@ -142,8 +186,11 @@ async def send_role_push_notifications(
     body: str,
     data: Optional[dict] = None,
     restaurant_id: Optional[int] = None,
+    image_url: Optional[str] = None,
 ):
     """
+    image_url（選填，https）用法同 send_user_push_notifications。
+
     推播給某個角色、且該 token 屬於 app_id 這個 App 的所有使用者（目前用於堂食
     新訂單通知所有 role="staff" 的店員帳號，app_id="staff-scanner"）——避免店員
     帳號如果同時也裝了 mynotification（例如自己也是顧客），個人購物用的 App
@@ -185,4 +232,4 @@ async def send_role_push_notifications(
         logger.info(f"role={role} 的使用者在 app_id={app_id} 都沒有可用 Token")
         return
 
-    await _publish_to_tokens(token_list, title, body, data)
+    await _publish_to_tokens(token_list, title, body, data, image_url)

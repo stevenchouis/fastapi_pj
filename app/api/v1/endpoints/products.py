@@ -154,6 +154,7 @@ async def update_product(
                 "screen": "ProductDetail",
                 "product_id": product_id,
             },
+            product.thumbnail,
         )
     if product.is_active and product.price < old_price:
         background_tasks.add_task(
@@ -168,6 +169,7 @@ async def update_product(
                 "screen": "ProductDetail",
                 "product_id": product_id,
             },
+            product.thumbnail,
         )
 
     return product
