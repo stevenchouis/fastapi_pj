@@ -188,7 +188,11 @@ alembic upgrade head
 - **懸而未決、刻意擱置的缺口：** 網購商店（`Product`/`Order`）完全沒有門市概念，等 ECPay 真的上線、網購開始賺點時，這筆點數要記錄哪個門市（或乾脆不記錄，反正是連鎖層級的消費）還沒有答案——記錄在這裡避免忘記，不用現在解。
 - **既有測試資料**：比照桌位那批的做法，新欄位 nullable、沒有遷移，既有的 `LoyaltyTransaction`/`Coupon` 資料保留原樣（`restaurant_id` 是 `NULL`）。
 
-**Model 結構補充：** `User` 對 `Order`、`Favorite`、`DineInOrder` 皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多；`MenuItem` 對 `DineInOrderItem` 為一對多。
+**堂食訂單取消（2026-09-19 由 mynotification 提出，已上線）：** `POST /api/v1/dine-in-orders/{id}/cancel`（`app/api/v1/endpoints/dine_in_orders.py`，需 `role="staff"`）處理「已出餐（`served`）但顧客沒付款就離開」的收尾——**只允許 `served → cancelled`，其餘狀態回 409**（刻意縮小範圍，不像 `/orders/{id}/cancel` 允許從 `pending` 取消）。退款邏輯跟 `/orders/{id}/cancel` 同一套（`coupon_service.release_coupon` 退券、`loyalty_service.reverse_redeem_points` 退點數並寫 `reverse_redeem` 交易），堂食沒有庫存所以不用回補。**不檢查呼叫者 `restaurant_id` 是否跟訂單一致**——比照既有 `PATCH /{id}/status` 的慣例（那支也沒檢查）。`DineInOrderOut` 另外新增 `coupon_title`（新增單向的 `DineInOrder.coupon` 唯讀關聯，`selectinload`，無 migration），給店員端取消確認對話框顯示用；`points_used`／`coupon_id`／`coupon_discount` 原本就有。已本機對正式 DB 端到端驗證（pending 409／非 staff 403／served→cancelled／重複呼叫 409／點數退回）。
+
+**好友系統（2026-09-19 由 mynotification 提出，已上線，詳見 `docs/friends.md`）：** 顧客掃對方 QR Code 送好友邀請、對方確認後成立好友、好友間可送快速訊息推播（**不含點數互轉**，留給之後獨立的 plan）。`Friendship` model：`user_a_id`／`user_b_id` 建立時正規化成「較小 id、較大 id」＋`UniqueConstraint`，**同一對使用者只有一列**，`requester_id` 另記發起人，`status` 為 `pending`／`accepted`／`declined`（自由字串）。因此互相邀請（含雙方同時互掃）自動收斂成 `accepted`、拒絕後重新邀請把同一列改回 `pending`，不需要歷史表；狀態轉換都用原子性條件式 UPDATE。端點（`app/api/v1/endpoints/friends.py`，皆需登入）：`GET /friends`、`GET /friends/requests`（收到的 pending）、`POST /friends/requests`（201；自己加自己 400；已是好友 409 + `detail={"error_code": "already_friends"}`）、`POST /friends/requests/{id}/accept`、`POST /friends/requests/{id}/reject`（注意是 `reject` 不是 `decline`）、`POST /friends/{friendship_id}/greetings`（200 `{"ok": true}`，只有已接受的好友能送）。推播 `data` 一律 `{"type": "friend_request" | "friend_request_accepted" | "friend_greeting", "screen": "Friends", "friendship_id": <id>}`，跟前端對過的契約，不能隨意改。**`username` 是暫代值**：`User` 沒有暱稱欄位，目前用 email 前綴遮罩（前 2 碼 + `***`），純 LINE 帳號為 `用戶{id}`，刻意不回傳完整 email（隱私）；日後新增真正暱稱欄位只需改 `friends.py` 的 `display_name()`。沒有解除好友端點、重新邀請沒有冷卻時間，皆為這期刻意不做。
+
+**Model 結構補充：** `User` 對 `Order`、`Favorite`、`DineInOrder`、`Friendship`（`friendships_as_a`／`friendships_as_b`）皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多；`MenuItem` 對 `DineInOrderItem` 為一對多。
 
 ## 專案慣例
 

@@ -4,6 +4,7 @@ from app.api.v1.endpoints import (
     coupons,
     dine_in_orders,
     favorites,
+    friends,
     items,
     login,
     loyalty,
@@ -59,3 +60,4 @@ api_router.include_router(
 api_router.include_router(
     store_checkouts.router, prefix="/store-checkouts", tags=["store-checkouts"]
 )
+api_router.include_router(friends.router, prefix="/friends", tags=["friends"])

@@ -83,6 +83,20 @@ class User(Base):
     loyalty_transactions = relationship(
         "LoyaltyTransaction", back_populates="user", cascade="all, delete-orphan"
     )
+    # 好友關係：一列 Friendship 同時掛在兩個使用者身上（user_a／user_b），
+    # 兩邊都要 cascade，使用者刪除時整列一併刪除
+    friendships_as_a = relationship(
+        "Friendship",
+        foreign_keys="Friendship.user_a_id",
+        back_populates="user_a",
+        cascade="all, delete-orphan",
+    )
+    friendships_as_b = relationship(
+        "Friendship",
+        foreign_keys="Friendship.user_b_id",
+        back_populates="user_b",
+        cascade="all, delete-orphan",
+    )
 
 
 class PushToken(Base):
@@ -444,6 +458,38 @@ class StoreCheckout(Base):
 
     user = relationship("User", foreign_keys=[user_id])
     staff_user = relationship("User", foreign_keys=[staff_user_id])
+
+
+class Friendship(Base):
+    """
+    好友關係（2026-09-19）。一對使用者只會有一列：user_a_id/user_b_id 建立時
+    一律正規化成「較小 id、較大 id」（不管誰先發邀請），再靠 UniqueConstraint 在
+    資料庫層面保證同一對只有一列——互相邀請的 race condition 因此自然收斂成同一列
+    （見 friends.py，第二個動作視為接受）。requester_id 另外記錄實際發起邀請的人。
+    status 是自由字串（pending/accepted/declined），沒有 DB enum，比照
+    Order.status／DineInOrder.status 慣例；拒絕後保留這一列，之後重新邀請時把同一列
+    改回 pending，不另建歷史表。
+    """
+
+    __tablename__ = "friendships"
+    __table_args__ = (
+        UniqueConstraint("user_a_id", "user_b_id", name="uq_friendships_pair"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_a_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    user_b_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    requester_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(String, nullable=False, server_default="pending")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    responded_at = Column(DateTime(timezone=True), nullable=True)
+
+    user_a = relationship(
+        "User", foreign_keys=[user_a_id], back_populates="friendships_as_a"
+    )
+    user_b = relationship(
+        "User", foreign_keys=[user_b_id], back_populates="friendships_as_b"
+    )
 
 
 class MagicLinkToken(Base):
