@@ -22,8 +22,9 @@ from app.services.push_service import send_role_push_notifications
 
 router = APIRouter()
 
-DINE_IN_ORDER_LOAD_OPTIONS = selectinload(DineInOrder.items).selectinload(
-    DineInOrderItem.menu_item
+DINE_IN_ORDER_LOAD_OPTIONS = (
+    selectinload(DineInOrder.items).selectinload(DineInOrderItem.menu_item),
+    selectinload(DineInOrder.coupon),
 )
 
 
@@ -45,6 +46,7 @@ def _to_order_out(order: DineInOrder) -> DineInOrderOut:
         status=order.status,
         total_amount=float(order.total_amount),
         coupon_id=order.coupon_id,
+        coupon_title=order.coupon.title if order.coupon else None,
         coupon_discount=float(order.coupon_discount),
         points_used=order.points_used,
         points_discount=float(order.points_discount),
@@ -223,7 +225,7 @@ async def create_dine_in_order(
     query = (
         select(DineInOrder)
         .where(DineInOrder.id == order_id)
-        .options(DINE_IN_ORDER_LOAD_OPTIONS)
+        .options(*DINE_IN_ORDER_LOAD_OPTIONS)
     )
     result = await db.execute(query)
     order = result.scalars().first()
@@ -253,7 +255,7 @@ async def get_my_dine_in_orders(
     query = (
         select(DineInOrder)
         .where(DineInOrder.user_id == current_user.id)
-        .options(DINE_IN_ORDER_LOAD_OPTIONS)
+        .options(*DINE_IN_ORDER_LOAD_OPTIONS)
         .order_by(DineInOrder.created_at.desc())
     )
     result = await db.execute(query)
@@ -281,7 +283,7 @@ async def list_dine_in_orders(
             DineInOrder.status == status,
             DineInOrder.restaurant_id == current_user.restaurant_id,
         )
-        .options(DINE_IN_ORDER_LOAD_OPTIONS)
+        .options(*DINE_IN_ORDER_LOAD_OPTIONS)
         .order_by(DineInOrder.created_at.asc())
     )
     result = await db.execute(query)
@@ -308,7 +310,7 @@ async def update_dine_in_order_status(
     query = (
         select(DineInOrder)
         .where(DineInOrder.id == dine_in_order_id)
-        .options(DINE_IN_ORDER_LOAD_OPTIONS)
+        .options(*DINE_IN_ORDER_LOAD_OPTIONS)
     )
     result = await db.execute(query)
     order = result.scalars().first()
@@ -347,7 +349,65 @@ async def update_dine_in_order_status(
     query = (
         select(DineInOrder)
         .where(DineInOrder.id == dine_in_order_id)
-        .options(DINE_IN_ORDER_LOAD_OPTIONS)
+        .options(*DINE_IN_ORDER_LOAD_OPTIONS)
+    )
+    result = await db.execute(query)
+    return _to_order_out(result.scalars().first())
+
+
+@router.post("/{dine_in_order_id}/cancel", response_model=DineInOrderOut)
+async def cancel_dine_in_order(
+    dine_in_order_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_staff_user),
+):
+    """
+    店員標記「已出餐但顧客沒付款就離開」的收尾機制，只有 role="staff" 能呼叫
+    （跟 /status 不同，這支是店員代顧客結案，不是顧客自己取消）。僅允許
+    served→cancelled，其餘狀態回 409——刻意縮小範圍，只處理「已出餐未付款」
+    這個情境，不像 /orders/{id}/cancel 允許從 pending 取消（堂食的 pending
+    單本來就沒有對應的收尾需求）。退款邏輯比照 /orders/{id}/cancel 同一套：
+    優惠券改回未使用、點數用 reverse_redeem 補回餘額；堂食沒有庫存概念
+    （MenuItem 沒有 stock），不需要回補庫存。不檢查呼叫者的 restaurant_id
+    是否跟訂單一致——比照既有 /status 端點的慣例，同樣不做這層限制。
+    """
+    query = (
+        select(DineInOrder)
+        .where(DineInOrder.id == dine_in_order_id)
+        .options(*DINE_IN_ORDER_LOAD_OPTIONS)
+    )
+    result = await db.execute(query)
+    order = result.scalars().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="訂單不存在")
+    if order.status != "served":
+        raise HTTPException(status_code=409, detail="只有等待收款的訂單可以標記為取消")
+
+    try:
+        if order.coupon_id is not None:
+            await coupon_service.release_coupon(db, order.coupon_id)
+
+        if order.points_used > 0:
+            await loyalty_service.reverse_redeem_points(
+                db,
+                order.user_id,
+                order.points_used,
+                reason=f"訂單取消退還：堂食訂單 #{dine_in_order_id}",
+                related_dine_in_order_id=dine_in_order_id,
+                restaurant_id=order.restaurant_id,
+            )
+
+        order.status = "cancelled"
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 取消堂食訂單失敗: {e}")
+        raise HTTPException(status_code=500, detail="取消訂單失敗")
+
+    query = (
+        select(DineInOrder)
+        .where(DineInOrder.id == dine_in_order_id)
+        .options(*DINE_IN_ORDER_LOAD_OPTIONS)
     )
     result = await db.execute(query)
     return _to_order_out(result.scalars().first())

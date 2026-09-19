@@ -318,6 +318,10 @@ class DineInOrder(Base):
     items = relationship(
         "DineInOrderItem", back_populates="order", cascade="all, delete-orphan"
     )
+    # 唯讀關聯，只是為了讓店員接單列表能直接顯示 coupon.title（單向，Coupon
+    # 沒有對應 back_populates，跟 Order 目前不曝露 coupon_title 不同——這是
+    # staff-scanner 這次的取消確認對話框特地要的）
+    coupon = relationship("Coupon", foreign_keys=[coupon_id])
 
 
 class DineInOrderItem(Base):

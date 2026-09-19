@@ -48,6 +48,7 @@ class DineInOrderOut(BaseModel):
     status: str
     total_amount: float
     coupon_id: Optional[int] = None
+    coupon_title: Optional[str] = None
     coupon_discount: float = 0
     points_used: int = 0
     points_discount: float = 0
