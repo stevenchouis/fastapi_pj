@@ -71,11 +71,16 @@
 
 ## 已知限制／刻意的取捨
 
-- **`username` 是暫代值**：`User` 沒有暱稱欄位，目前用 email 前綴遮罩（前 2 碼 + `***`，例如 `st***`），純 LINE 帳號沒有 email 就是 `用戶{id}`；**刻意不回傳完整 email**（比照先前店員端只給 `user_id` 的隱私考量，避免陌生人透過邀請看到對方信箱）。想有真正的暱稱：新增 `User.display_name` 欄位＋更新端點，然後只要改 `friends.py` 的 `display_name()` 這一個函式。
+- **`username` 的來源**：`User.nickname`（2026-09-19 新增，見下）優先；沒填才退回 email 前綴遮罩（前 2 碼 + `***`，例如 `st***`），純 LINE 帳號沒有 email 就是 `用戶{id}`。**刻意不回傳完整 email**（比照先前店員端只給 `user_id` 的隱私考量，避免陌生人透過邀請看到對方信箱）。邏輯全在 `friends.py` 的 `display_name()`，推播文案共用。
+
 - **沒有解除好友（unfriend）端點**——這期需求沒提，之後要加可直接刪除該列（或改成新的 status）。
 - **重新邀請沒有冷卻時間**：被拒絕後對方可以立刻再邀請一次。目前規模不需要；如果之後有騷擾問題，再加冷卻或「拒絕 N 次後封鎖」。
 - greetings 沒有頻率限制，只限制長度 1–50。
 - 沒有為每個使用者產生獨立的 QR token——QR 內容只是公開的 `user_id`，任何人都能對任何 `user_id` 送邀請（對方仍需確認才成立好友）。這是需求（掃了就能加）決定的，如果之後擔心被濫發邀請再加防護。
+
+### `User.nickname`（暱稱）
+
+`users.nickname`（String，nullable，migration `e62e472e4275`，不要求唯一，註冊不強制填）。`GET /users/me` 回傳 `nickname`；`PUT /users/me` 帶 `nickname`：`null`／沒帶＝不改，trim 後空字串或純空白＝清除（存 null），超過 20 字回 422。同一次也移除了沒有作用的 `UserUpdate.username`（`User` model 沒有這個 column，過去 PUT 一直被靜默忽略）。
 
 ## 驗證
 

@@ -30,6 +30,9 @@ class User(Base):
     hashed_password = Column(String, nullable=True)  # 純 Google 帳號沒有密碼，允許為空
     is_active = Column(Boolean, default=True)
     avatar_url = Column(String, nullable=True)  # 新增這一行
+    # 暱稱（2026-09-19，好友系統顯示用）：使用者自己在設定頁填，不要求唯一，
+    # 沒填就是 None（好友 API 會退回用遮罩後的 email 前綴，見 friends.py display_name）
+    nickname = Column(String, nullable=True)
     # Google 登入用：Google 帳號的唯一識別碼（sub）
     google_id = Column(String, unique=True, index=True, nullable=True)
     # LINE 登入用：LINE 帳號的唯一識別碼（sub）。LINE 預設不提供 Email，

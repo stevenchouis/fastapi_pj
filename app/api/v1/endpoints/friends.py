@@ -28,9 +28,11 @@ FRIEND_LOAD_OPTIONS = (
 
 
 def display_name(user: User) -> str:
-    # User 目前沒有暱稱欄位：用 email 前綴遮罩後（前 2 碼 + ***）當暫代顯示名稱，
-    # 純 LINE 帳號沒有 email 就用「用戶{id}」。之後如果新增真正的暱稱欄位，
-    # 只要改這一個函式
+    # 暱稱優先；沒填才退回用 email 前綴遮罩後（前 2 碼 + ***）當顯示名稱，
+    # 純 LINE 帳號沒有 email 就用「用戶{id}」。API 回應欄位仍叫 username，
+    # 推播文案也共用這個函式
+    if user.nickname:
+        return user.nickname
     if user.email:
         return f"{user.email.split('@')[0][:2]}***"
     return f"用戶{user.id}"

@@ -51,6 +51,10 @@ async def update_user_me(
         current_user.avatar_url = obj_in.avatar_url
         print(f"DEBUG: 已將 avatar_url 設為 -> {obj_in.avatar_url}")
 
+    # 空字串（trim 後）代表清除暱稱；None 代表這次沒帶，不動
+    if obj_in.nickname is not None:
+        current_user.nickname = obj_in.nickname or None
+
     # 執行儲存 (必須加上 await)
     try:
         db.add(current_user)

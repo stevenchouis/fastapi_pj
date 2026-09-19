@@ -1,6 +1,6 @@
 from datetime import date  # 匯入 date 類型以處理生日欄位
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 
 
 # 基礎模型：共用的欄位
@@ -16,9 +16,21 @@ class UserCreate(UserBase):
 
 # 新增：更新使用者時需要的資料（使用 | None 取代 Optional）
 class UserUpdate(BaseModel):
-    username: str | None = None
     avatar_url: str | None = None  # 接收來自 Supabase 的圖片網址
     birthday: date | None = None  # 新增生日欄位
+    # None＝這次沒帶（不改）；trim 後空字串／純空白＝清除暱稱（存 null）；
+    # 超過 20 字回 422。不要求唯一
+    nickname: str | None = None
+
+    @field_validator("nickname")
+    @classmethod
+    def _validate_nickname(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if len(value) > 20:
+            raise ValueError("暱稱最多 20 個字")
+        return value
 
 
 # 回傳給前端的資料（排除密碼，增加 ID）
@@ -26,6 +38,7 @@ class User(UserBase):
     id: int
     # 必須新增這一行，GET /me 才會回傳這個欄位
     avatar_url: str | None = None
+    nickname: str | None = None
     birthday: date | None = None  # 新增生日欄位
     role: str = "customer"  # 'customer' / 'staff'，App 端登入後呼叫 GET /me 用這個判斷能不能核銷
     # 2026-09 多門市支援：僅 role="staff" 有意義，店員 App 登入後用這個知道
