@@ -415,6 +415,11 @@ class LoyaltyTransaction(Base):
     # 計算或折抵資格**——點數餘額仍是 User.loyalty_balance 單一帳戶層級，任何門市
     # 賺的點都能在任何門市折抵，這欄位只是讓「這筆消費/折抵是哪個門市」可追溯。
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=True)
+
+    # 2026-10 點數即將到期提醒排程：這筆 earn 紀錄是否已經被「到期提醒」排程
+    # 推播過，避免同一筆 earn 紀錄在到期前的提醒區間內被重複提醒；跟 remaining_amount
+    # 是否之後被折抵消耗無關（只要已經提醒過，這筆紀錄就不再提醒第二次）
+    reminded_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="loyalty_transactions")

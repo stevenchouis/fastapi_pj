@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -9,6 +10,15 @@ from app.core.config import settings
 from app.database_async import AsyncSessionLocal  #
 from app.models import Coupon, LoyaltyTransaction, User  #
 from app.services.push_service import send_user_push_notifications
+
+# 2026-10：先前沒有明確指定 timezone，實際觸發時間取決於執行機器的系統時區
+# （本機開發機是 Asia/Taipei，但 Render 容器的實際時區未經證實，兩者可能不一致，
+# 本機測試出來的觸發時機不能代表正式環境）。明確指定後，不管部署在哪個平台、
+# 本機測試還是正式環境，所有 cron 排程的 hour/day 都是固定對應台灣當地時間，
+# 不用再心算時區差。這個改動會讓既有兩支排程（生日禮券、點數到期）的「實際」
+# 觸發時間變成確定值，若 Render 先前實際是 UTC，等於把執行時間往後移 8 小時——
+# 跟使用者確認後才套用。
+SCHEDULER_TIMEZONE = ZoneInfo("Asia/Taipei")
 
 
 async def send_birthday_coupons_async_task():
@@ -170,6 +180,76 @@ def run_loyalty_expiry_bridge():
     loop.close()
 
 
+POINTS_EXPIRY_REMINDER_WINDOW_DAYS = 7
+
+
+async def send_points_expiry_reminder_task():
+    """
+    點數即將到期提醒排程：掃出 type="earn"、remaining_amount>0、expires_at 落在
+    「今天～今天+7天」區間、且還沒提醒過（reminded_at IS NULL）的紀錄，同一使用者
+    當天合併成一則推播（文案帶總到期點數）。用區間而不是「正好差 7 天」比對，
+    是為了避免排程萬一哪天沒準時跑就漏掉使用者。reminded_at 是否標記跟推播有沒有
+    真的送達無關——DB 這批紀錄一旦標記過，就不會再進到下一次排程的篩選範圍，
+    跟 _publish_to_tokens 本身失敗只記 log、不回滾的既有慣例一致（best-effort 推播）。
+    """
+    now = datetime.now(UTC)
+    window_end = now + timedelta(days=POINTS_EXPIRY_REMINDER_WINDOW_DAYS)
+    reminded_count = 0
+    notified_users = 0
+
+    async with AsyncSessionLocal() as db:
+        try:
+            query = select(LoyaltyTransaction).where(
+                LoyaltyTransaction.type == "earn",
+                LoyaltyTransaction.remaining_amount > 0,
+                LoyaltyTransaction.expires_at > now,
+                LoyaltyTransaction.expires_at <= window_end,
+                LoyaltyTransaction.reminded_at.is_(None),
+            )
+            result = await db.execute(query)
+            due_txns = result.scalars().all()
+
+            by_user: dict[int, int] = {}
+            for txn in due_txns:
+                by_user[txn.user_id] = by_user.get(txn.user_id, 0) + txn.remaining_amount
+                txn.reminded_at = now
+                reminded_count += 1
+
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            print(f"點數到期提醒排程執行失敗: {e}")
+            return
+
+    # 標記已 commit 完才發推播，比照既有慣例（撈資料/寫DB → 關閉交易 → 再發推播）
+    for user_id, total_amount in by_user.items():
+        try:
+            await send_user_push_notifications(
+                AsyncSessionLocal,
+                user_id,
+                "mynotification",
+                "⏰ 點數即將到期",
+                f"您有 {total_amount} 點將在 {POINTS_EXPIRY_REMINDER_WINDOW_DAYS} 天內到期，記得使用！",
+                {"type": "points_expiring_soon", "screen": "Points"},
+            )
+            notified_users += 1
+        except Exception as e:
+            print(f"點數到期提醒推播失敗 user_id={user_id}: {e}")
+
+    print(
+        f"[{datetime.now()}] 點數到期提醒排程完成，標記 {reminded_count} 筆 earn 紀錄、"
+        f"通知 {notified_users} 位使用者"
+    )
+
+
+def run_points_expiry_reminder_bridge():
+    """橋接 BackgroundScheduler (同步) 與 send_points_expiry_reminder_task"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(send_points_expiry_reminder_task())
+    loop.close()
+
+
 def run_self_ping_bridge():
     """橋接 BackgroundScheduler (同步) 與 self_ping_task"""
     loop = asyncio.new_event_loop()
@@ -178,12 +258,13 @@ def run_self_ping_bridge():
     loop.close()
 
 
-# 初始化排程器
-scheduler = BackgroundScheduler()
+# 初始化排程器；明確指定 timezone=Asia/Taipei（見上方 SCHEDULER_TIMEZONE 說明），
+# 讓所有 cron 的 hour/day 不論部署在哪個平台都固定對應台灣當地時間
+scheduler = BackgroundScheduler(timezone=SCHEDULER_TIMEZONE)
 
 
 def start_scheduler():
-    # 1. 正式任務：每月 25 日執行 (保持原樣，這不會影響測試)
+    # 1. 正式任務：每月 25 日的台灣當地時間 00:00 執行
     scheduler.add_job(run_scheduler_bridge, "cron", day=25, hour=0, minute=0)
 
     # 2. 測試任務：將前面的 # 移除，使其生效
@@ -194,12 +275,17 @@ def start_scheduler():
     # （14 分鐘），讓服務在有人使用的期間不會冷啟動，又不會完全 24 小時佔滿額度
     scheduler.add_job(run_self_ping_bridge, "interval", minutes=14)
 
-    # 4. 紅利點數到期排程：每天凌晨 1 點收回已過期、還沒被折抵消耗完的點數
+    # 4. 紅利點數到期排程：每天台灣當地時間凌晨 1 點收回已過期、還沒被折抵消耗完的點數
     scheduler.add_job(run_loyalty_expiry_bridge, "cron", hour=1, minute=0)
+
+    # 5. 點數即將到期提醒排程：每天台灣當地時間上午 10 點，跟上面的到期排程錯開、
+    # 也不會太早吵到使用者手機（這是真的會推播的通知，跟上面的靜默收回不同）
+    scheduler.add_job(run_points_expiry_reminder_bridge, "cron", hour=10, minute=0)
 
     # 啟動排程器
     scheduler.start()
     print(
-        "APScheduler 已啟動：正式任務 (每月25日)、保活任務 (每14分鐘)、"
-        "點數到期排程 (每日01:00) 運行中..."
+        "APScheduler 已啟動（timezone=Asia/Taipei）：正式任務 (每月25日 00:00)、"
+        "保活任務 (每14分鐘)、點數到期排程 (每日01:00)、"
+        "點數到期提醒排程 (每日10:00) 運行中..."
     )
