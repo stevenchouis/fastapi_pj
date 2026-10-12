@@ -9,13 +9,14 @@ from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.database_async import AsyncSessionLocal, get_db
-from app.models import Friendship, User
+from app.models import Friendship, Product, User
 from app.schemas.friend import (
     FriendOut,
     FriendRequestCreate,
     FriendRequestOut,
     FriendshipOut,
     GreetingCreate,
+    ProductShareCreate,
 )
 from app.services.push_service import send_user_push_notifications
 
@@ -357,5 +358,51 @@ async def send_greeting(
         payload.message,
         {"type": "friend_greeting", "screen": "Friends", "friendship_id": friendship_id},
         my_avatar,
+    )
+    return {"ok": True}
+
+
+@router.post("/{friendship_id}/share-product")
+async def share_product(
+    friendship_id: int,
+    payload: ProductShareCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_user),
+):
+    """
+    把商品分享給好友（商品詳情頁的「分享給好友」按鈕），沒有訊息輸入框，純粹
+    分享商品本身。驗證規則比照 send_greeting：不是這段關係的成員回 404、還不是
+    accepted 的好友回 409——分享跟快速訊息一樣只限已互相確認的好友，pending/declined
+    都不行。product_id 不存在**或已下架**都視為 404（比照 GET /products 公開端點
+    只回傳上架商品的慣例，分享一個使用者點進去也看不到的商品沒有意義）。
+    推播沿用收藏到貨/降價通知同一組 data 格式（type/screen/product_id），前端
+    完全不用新增導頁分支；順手帶上 image_url=product.thumbnail（商品縮圖本來就是
+    https 網址，剛好套用上週才做好的推播帶圖功能）。
+    """
+    me = current_user.id
+    my_name = display_name(current_user)
+    row = await _load_friendship(db, friendship_id)
+    if row is None or me not in (row.user_a_id, row.user_b_id):
+        raise HTTPException(status_code=404, detail="好友關係不存在")
+    if row.status != "accepted":
+        raise HTTPException(status_code=409, detail="還不是好友")
+    recipient_id = row.user_b_id if row.user_a_id == me else row.user_a_id
+
+    product = await db.get(Product, payload.product_id)
+    if product is None or not product.is_active:
+        raise HTTPException(status_code=404, detail="商品不存在")
+
+    _push(
+        background_tasks,
+        recipient_id,
+        f"🛍️ {my_name}",
+        f"{my_name} 分享了「{product.title}」給你看看！",
+        {
+            "type": "friend_product_share",
+            "screen": "ProductDetail",
+            "product_id": product.id,
+        },
+        product.thumbnail,
     )
     return {"ok": True}

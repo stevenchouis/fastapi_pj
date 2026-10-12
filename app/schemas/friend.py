@@ -40,3 +40,7 @@ class FriendshipOut(BaseModel):
 class GreetingCreate(BaseModel):
     # 前端固定選項字串（例如「謝謝！」），不驗證內容，只限制長度避免濫用
     message: str = Field(min_length=1, max_length=50)
+
+
+class ProductShareCreate(BaseModel):
+    product_id: int
