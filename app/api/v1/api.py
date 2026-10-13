@@ -8,6 +8,7 @@ from app.api.v1.endpoints import (
     items,
     login,
     loyalty,
+    marquee,
     menu_items,
     notifications,
     orders,
@@ -61,3 +62,4 @@ api_router.include_router(
     store_checkouts.router, prefix="/store-checkouts", tags=["store-checkouts"]
 )
 api_router.include_router(friends.router, prefix="/friends", tags=["friends"])
+api_router.include_router(marquee.router, prefix="/marquee", tags=["marquee"])

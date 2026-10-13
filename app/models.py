@@ -183,6 +183,30 @@ class Promotion(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class MarqueeItem(Base):
+    """
+    首頁跑馬燈文字（2026-10-13），單筆內容；前端抓到清單後依序用全形空白接起來
+    顯示。跟 SearchSuggestion/Promotion 同慣例（is_active/sort_order/start_at/end_at），
+    差異是這個有後台管理 CRUD（放在 staff-scanner），所以多了 updated_at。
+    """
+
+    __tablename__ = "marquee_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # 建議 100 字內——跑馬燈會用全形空白接起來顯示，過長可能跑版；這裡刻意不加
+    # 資料庫層長度限制（跟 SearchSuggestion.keyword/Promotion.title 一致），
+    # 因為沒有對應的公開寫入端點需要擋，加了只會在後台維護時噴不好懂的 DB 錯誤
+    text = Column(String, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)  # 顯示順序，數字越小越前面
+    is_active = Column(Boolean, nullable=False, default=True)  # 是否啟用（下架不刪資料）
+    start_at = Column(DateTime(timezone=True), nullable=True)  # 生效起始時間，可為空
+    end_at = Column(DateTime(timezone=True), nullable=True)  # 生效結束時間，可為空
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Product(Base):
     __tablename__ = "products"
 
