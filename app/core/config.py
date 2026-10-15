@@ -21,7 +21,16 @@ class Settings(BaseSettings):
     LINE_CHANNEL_ID: str = ""
     LINE_CHANNEL_SECRET: str = ""
     # Magic Link 登入用：Resend 的 API Key（尚未取得前先允許空字串，寄信時才報錯）
+    # 2026-10 起 Magic Link 實際改用 Brevo 寄信（Resend 的 onboarding@resend.dev 測試
+    # 寄件地址規定只能寄給 Resend 帳號本人，寄給其他使用者會失敗；Brevo 只要驗證一個
+    # 寄件 Email 就能寄給任何人，免費額度每天 300 封）。RESEND_API_KEY／resend 套件
+    # 暫時保留未使用，確認沒有其他地方依賴後可以整個移除。
     RESEND_API_KEY: str = ""
+    # Brevo（寄 Magic Link 信用）：API Key、寄件 Email（需在 Brevo 後台 Senders 驗證過）、
+    # 寄件人顯示名稱。尚未取得前先允許空字串，寄信時才報錯（比照 RESEND_API_KEY 慣例）
+    BREVO_API_KEY: str = ""
+    MAIL_FROM_EMAIL: str = ""
+    MAIL_FROM_NAME: str = ""
     # Magic Link 落地頁的完整對外網址（開發階段用區網 IP，跟 App 的 EXPO_PUBLIC_API_URL 同一台主機）
     BASE_URL: str = "http://192.168.68.56:8000"
     # 管理者手動發券 API 用的固定密鑰（X-Admin-Key header 比對），不給預設值強迫從 .env 讀取
