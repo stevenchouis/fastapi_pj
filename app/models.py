@@ -181,6 +181,10 @@ class Promotion(Base):
     start_at = Column(DateTime(timezone=True), nullable=True)  # 生效起始時間，可為空
     end_at = Column(DateTime(timezone=True), nullable=True)  # 生效結束時間，可為空
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # 2026-10 後台管理 CRUD 上線後新增，讓人看得出最後編輯時間（比照 MarqueeItem）
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class MarqueeItem(Base):
