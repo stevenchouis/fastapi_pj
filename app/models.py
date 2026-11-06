@@ -187,6 +187,36 @@ class Promotion(Base):
     )
 
 
+class HeroBanner(Base):
+    """
+    首頁大輪播（2026-10-28），取代前端原本寫死的 BANNER_COPY 常數。跟
+    MarqueeItem/Promotion 同慣例（is_active/sort_order/start_at/end_at/updated_at），
+    差異是多了 link_route（點擊導向，見 app/api/v1/endpoints/hero_banners.py 的
+    HERO_BANNER_LINK_ROUTES 白名單——三方前端寫死同一份清單，後端驗證輸入值
+    必須在清單內，不是 DB 層 CHECK constraint，因為清單之後可能變動，改 Python
+    常數比改 migration 簡單）。
+    """
+
+    __tablename__ = "hero_banners"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    subtitle = Column(String, nullable=False)
+    color = Column(String, nullable=False)  # 卡片底色 hex
+    # 可空：沒圖時前端只顯示 color 底色，不是必須有圖片才能上架
+    image_url = Column(String, nullable=True)
+    # 可空：null 代表點了不導向任何畫面；有值時必須在白名單內（見上）
+    link_route = Column(String, nullable=True)
+    sort_order = Column(Integer, nullable=False, default=0)  # 顯示順序，數字越小越前面
+    is_active = Column(Boolean, nullable=False, default=True)  # 是否啟用（下架不刪資料）
+    start_at = Column(DateTime(timezone=True), nullable=True)  # 生效起始時間，可為空
+    end_at = Column(DateTime(timezone=True), nullable=True)  # 生效結束時間，可為空
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class MarqueeItem(Base):
     """
     首頁跑馬燈文字（2026-10-13），單筆內容；前端抓到清單後依序用全形空白接起來

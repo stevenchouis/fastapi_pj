@@ -5,6 +5,7 @@ from app.api.v1.endpoints import (
     dine_in_orders,
     favorites,
     friends,
+    hero_banners,
     items,
     login,
     loyalty,
@@ -63,3 +64,6 @@ api_router.include_router(
 )
 api_router.include_router(friends.router, prefix="/friends", tags=["friends"])
 api_router.include_router(marquee.router, prefix="/marquee", tags=["marquee"])
+api_router.include_router(
+    hero_banners.router, prefix="/hero-banners", tags=["hero-banners"]
+)
