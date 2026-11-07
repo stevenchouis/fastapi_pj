@@ -1,7 +1,8 @@
 import logging
+import secrets
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +67,80 @@ async def update_user_me(
         await db.rollback()  # <--- 修正處：加上 await
         print(f"DEBUG: 更新失敗，原因: {e}")
         raise HTTPException(status_code=500, detail="Database Update Failed")
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_me(
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    刪除帳號（Google Play／App Store 上架要求的「App 內刪除帳號」）。立即生效，
+    沒有冷靜期。role="staff" 的帳號禁止走這支（店員帳號要由管理者直接去 DB 處理，
+    跟 role 本身沒有自助升級端點的慣例一致），回 403。
+
+    「你決定」的三個設計點：
+    1. 刪除標記沿用既有的 is_active（不新增 deleted_at）——login.py 三種登入
+       方式已經在檢查這個欄位，這次只是在 deps.get_current_user 補上同一個
+       檢查，讓刪除後的舊 JWT 也會被擋（401），不需要兩個欄位表達同一件事。
+    2. Order／DineInOrder／StoreCheckout 的 user_id 維持指向這筆已匿名化的
+       User，不改成 null——這三個欄位本來就是 nullable=False，改 null 需要
+       額外 migration；而且 User 這邊已經清空所有識別資訊，保留「哪個帳號
+       買的」這個事實本身不構成個資洩漏，跟一般電商「刪帳號不影響已完成
+       訂單」的常見作法一致。
+    3. 紅利點數：LoyaltyTransaction 明細整批刪除、User.loyalty_balance 歸零
+       ——跟 Order 等「交易紀錄」不同，點數明細純粹是會員制度內部帳本，沒有
+       保留義務，整批清掉比只歸零餘額更乾淨。
+
+    email 改成 `deleted-{id}@deleted.invalid` 這種不可能登入的佔位值，原 email
+    因此可以重新註冊新帳號（email 欄位本身是 unique，佔位值用 id 保證不會跟
+    其他已刪除帳號衝突）。MagicLinkToken 沒有 user_id 外鍵（只存 email 字串），
+    所以要在改掉 email 前先記下舊值才能比對刪除。
+    """
+    if current_user.role == "staff":
+        raise HTTPException(status_code=403, detail="店員帳號請由管理者處理")
+
+    user_id = current_user.id
+    old_email = current_user.email
+
+    try:
+        await db.execute(delete(models.PushToken).where(models.PushToken.user_id == user_id))
+        await db.execute(delete(models.NotificationLog).where(models.NotificationLog.user_id == user_id))
+        await db.execute(delete(models.Favorite).where(models.Favorite.user_id == user_id))
+        await db.execute(
+            delete(models.Friendship).where(
+                or_(models.Friendship.user_a_id == user_id, models.Friendship.user_b_id == user_id)
+            )
+        )
+        # 只刪未使用的優惠券/核銷碼；已核銷的維持不動（跟 Order 一樣算交易紀錄）
+        await db.execute(
+            delete(models.Coupon).where(
+                models.Coupon.user_id == user_id, models.Coupon.is_used.is_(False)
+            )
+        )
+        await db.execute(
+            delete(models.LoyaltyTransaction).where(models.LoyaltyTransaction.user_id == user_id)
+        )
+        if old_email:
+            await db.execute(delete(models.MagicLinkToken).where(models.MagicLinkToken.email == old_email))
+
+        current_user.email = f"deleted-{user_id}@deleted.invalid"
+        current_user.hashed_password = pwd_context.hash(secrets.token_urlsafe(32))
+        current_user.nickname = None
+        current_user.birthday = None
+        current_user.avatar_url = None
+        current_user.google_id = None
+        current_user.line_id = None
+        current_user.member_code_hash = None
+        current_user.member_code_expires_at = None
+        current_user.loyalty_balance = 0
+        current_user.is_active = False
+
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 刪除帳號失敗: {e}")
+        raise HTTPException(status_code=500, detail="刪除帳號失敗")
 
 
 @router.get("/{user_id}")

@@ -43,6 +43,12 @@ async def get_current_user(
     if not user:
         raise HTTPException(status_code=404, detail="找不到使用者")
 
+    # 2026-11 App 內刪除帳號：is_active 本來就是三種登入方式共用的「能不能登入」
+    # 開關（login.py 已經在用），刪除帳號時把它設成 False，這裡順勢擋掉刪除前
+    # 發出的舊 JWT——不需要再額外加一個 deleted_at 欄位來判斷
+    if not user.is_active:
+        raise HTTPException(status_code=401, detail="帳號已被刪除或停用")
+
     return user
 
 
