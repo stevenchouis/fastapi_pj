@@ -1,15 +1,18 @@
 # app/api/v1/endpoints/dine_in_orders.py
 from decimal import Decimal
 from typing import List
+from zoneinfo import ZoneInfo
 
+from datetime import datetime as dt
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.database_async import AsyncSessionLocal, get_db
-from app.models import DineInOrder, DineInOrderItem, Table
+from app.models import DailyPickupCounter, DineInOrder, DineInOrderItem, Table
 from app.models import MenuItem as MenuItemModel
 from app.schemas.dine_in_order import (
     DineInOrderCreate,
@@ -18,14 +21,42 @@ from app.schemas.dine_in_order import (
     DineInOrderStatusUpdate,
 )
 from app.services import coupon_service, loyalty_service
-from app.services.push_service import send_role_push_notifications
+from app.services.push_service import send_role_push_notifications, send_user_push_notifications
 
 router = APIRouter()
+
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 DINE_IN_ORDER_LOAD_OPTIONS = (
     selectinload(DineInOrder.items).selectinload(DineInOrderItem.menu_item),
     selectinload(DineInOrder.coupon),
 )
+
+
+def _taipei_today():
+    """營業日定義：台灣當地時間的今天，每天 00:00 歸零（見 DailyPickupCounter）。"""
+    return dt.now(TAIPEI_TZ).date()
+
+
+async def _next_pickup_number(db: AsyncSession, restaurant_id: int, business_date) -> int:
+    """
+    原子性 upsert-increment 取下一個取餐號碼，不用重試迴圈：同一個
+    (restaurant_id, business_date) 第一次呼叫會插入 last_number=1，之後每次
+    呼叫都是 last_number+1，INSERT ... ON CONFLICT DO UPDATE 本身就是單一
+    原子操作，高併發下單也不會重號（比照 Product.stock 的原子性 UPDATE 慣例，
+    只是這裡沒有既有列可以更新，所以用 upsert 而不是單純 UPDATE）。
+    """
+    stmt = (
+        pg_insert(DailyPickupCounter)
+        .values(restaurant_id=restaurant_id, pickup_date=business_date, last_number=1)
+        .on_conflict_do_update(
+            index_elements=[DailyPickupCounter.restaurant_id, DailyPickupCounter.pickup_date],
+            set_={"last_number": DailyPickupCounter.last_number + 1},
+        )
+        .returning(DailyPickupCounter.last_number)
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one()
 
 
 def _to_order_out(order: DineInOrder) -> DineInOrderOut:
@@ -53,6 +84,9 @@ def _to_order_out(order: DineInOrder) -> DineInOrderOut:
         points_earned=points_earned,
         payment_method=order.payment_method,
         created_at=order.created_at,
+        pickup_number=order.pickup_number,
+        called_at=order.called_at,
+        call_count=order.call_count,
         items=[
             DineInOrderItemOut(
                 menu_item_id=item.menu_item_id,
@@ -85,6 +119,9 @@ async def create_dine_in_order(
     就算收單也會在店員接單列表（依 restaurant_id scope）裡永遠看不到，讓它能下
     單沒有意義。可選的 coupon_id／use_points 折抵順序跟 /orders 相同：先套用
     優惠券折扣（clamp 到不超過商品小計），再用「券後金額」計算點數折抵上限。
+
+    2026-11 叫號推播：下單時依 restaurant_id + 營業日（台灣時間）配一個
+    pickup_number（見 _next_pickup_number），同一門市同一天從 1 開始遞增。
     """
     table_result = await db.execute(select(Table).where(Table.id == payload.table_id))
     table = table_result.scalars().first()
@@ -175,6 +212,9 @@ async def create_dine_in_order(
                 )
             points_discount = Decimal(points_used) * loyalty_service.REDEEM_POINT_VALUE
 
+        business_date = _taipei_today()
+        pickup_number = await _next_pickup_number(db, restaurant_id, business_date)
+
         order = DineInOrder(
             user_id=current_user.id,
             table_number=table_number,
@@ -186,6 +226,8 @@ async def create_dine_in_order(
             coupon_discount=coupon_discount,
             points_used=points_used,
             points_discount=points_discount,
+            pickup_number=pickup_number,
+            pickup_date=business_date,
         )
         order.items = order_items
         db.add(order)
@@ -354,6 +396,78 @@ async def update_dine_in_order_status(
     )
     result = await db.execute(query)
     return _to_order_out(result.scalars().first())
+
+
+@router.post("/{dine_in_order_id}/call", response_model=DineInOrderOut)
+async def call_dine_in_order(
+    dine_in_order_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_staff_user),
+):
+    """
+    店員叫號：推播通知顧客「餐點好了，請至櫃檯取餐」，只有 role="staff" 能呼叫。
+    跟 /status／/cancel 不同，**這支會檢查呼叫者 restaurant_id 是否跟訂單一致**
+    （比照 mynotification 這次的規格明確要求「只能叫自己門市的單」）——跨門市
+    的訂單視為不存在（404），不回 403，避免洩漏其他門市有哪些訂單。只允許
+    status=pending（還在候餐中，還沒出餐）才能叫號，其他狀態回 409；不限制
+    叫號頻率（前端自己防連點）。這支完全不動 pending→served→completed 狀態機
+    本身，只更新 called_at／call_count。用 SELECT ... FOR UPDATE 鎖住訂單，
+    跟其他會修改這個訂單的端點（/status、/cancel）維持一致的並發保護。
+    """
+    if current_user.restaurant_id is None:
+        raise HTTPException(status_code=400, detail="帳號尚未指定所屬門市")
+
+    query = (
+        select(DineInOrder)
+        .where(DineInOrder.id == dine_in_order_id)
+        .options(*DINE_IN_ORDER_LOAD_OPTIONS)
+        .with_for_update()
+    )
+    result = await db.execute(query)
+    order = result.scalars().first()
+    if not order or order.restaurant_id != current_user.restaurant_id:
+        raise HTTPException(status_code=404, detail="訂單不存在")
+    if order.status != "pending":
+        raise HTTPException(status_code=409, detail="只有候餐中的訂單可以叫號")
+
+    try:
+        order.called_at = dt.now(TAIPEI_TZ)
+        order.call_count = (order.call_count or 0) + 1
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 堂食訂單叫號失敗: {e}")
+        raise HTTPException(status_code=500, detail="叫號失敗")
+
+    query = (
+        select(DineInOrder)
+        .where(DineInOrder.id == dine_in_order_id)
+        .options(*DINE_IN_ORDER_LOAD_OPTIONS)
+    )
+    result = await db.execute(query)
+    order = result.scalars().first()
+
+    if order.pickup_number is not None:
+        body = f"取餐號碼 {order.pickup_number:03d}，請至櫃檯取餐"
+    else:
+        body = "您的餐點已經準備好了，請至櫃檯取餐"  # 舊訂單沒有 pickup_number 的退回文案
+    background_tasks.add_task(
+        send_user_push_notifications,
+        AsyncSessionLocal,
+        order.user_id,
+        "mynotification",
+        "餐點好了！",
+        body,
+        {
+            "type": "dine_in_order_ready",
+            "screen": "DineInOrder",
+            "dine_in_order_id": dine_in_order_id,
+            "pickup_number": order.pickup_number,
+        },
+    )
+
+    return _to_order_out(order)
 
 
 @router.post("/{dine_in_order_id}/cancel", response_model=DineInOrderOut)

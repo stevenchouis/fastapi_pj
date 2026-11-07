@@ -388,6 +388,15 @@ class DineInOrder(Base):
     # 命名慣例，純記錄不接真實金流），收款前（status 還不是 completed）是 NULL
     payment_method = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # 2026-11 叫號推播：下單當下依「restaurant_id + 營業日（台灣時間，每天 00:00
+    # 歸零）」配號，從 1 開始遞增；舊資料（這次上線前建立的訂單）是 NULL。
+    # pickup_date 另外存一份（不是從 created_at 反推），避免之後要查「這個號碼
+    # 屬於哪個營業日」時還要重算時區轉換——配號當下的台灣日期是什麼就存什麼，
+    # 跟 DailyPickupCounter 用的是同一個值
+    pickup_number = Column(Integer, nullable=True)
+    pickup_date = Column(Date, nullable=True)
+    called_at = Column(DateTime(timezone=True), nullable=True)  # 最後一次叫號時間
+    call_count = Column(Integer, nullable=False, server_default="0")
 
     user = relationship("User", back_populates="dine_in_orders")
     items = relationship(
@@ -397,6 +406,22 @@ class DineInOrder(Base):
     # 沒有對應 back_populates，跟 Order 目前不曝露 coupon_title 不同——這是
     # staff-scanner 這次的取消確認對話框特地要的）
     coupon = relationship("Coupon", foreign_keys=[coupon_id])
+
+
+class DailyPickupCounter(Base):
+    """
+    2026-11 叫號推播：每間門市、每個營業日各自的取餐號碼計數器，用
+    INSERT ... ON CONFLICT DO UPDATE ... RETURNING（原子性 upsert-increment，
+    見 dine_in_orders.py 的 _next_pickup_number）取下一號，不用重試迴圈、也不
+    會在高併發下單時重號。PK 是 (restaurant_id, pickup_date) 這對組合本身，
+    不需要額外的 id。
+    """
+
+    __tablename__ = "daily_pickup_counters"
+
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), primary_key=True)
+    pickup_date = Column(Date, primary_key=True)
+    last_number = Column(Integer, nullable=False, server_default="0")
 
 
 class DineInOrderItem(Base):

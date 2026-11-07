@@ -55,6 +55,10 @@ class DineInOrderOut(BaseModel):
     points_earned: int = 0
     payment_method: Optional[str] = None
     created_at: datetime
+    # 2026-11 叫號推播：舊訂單（這次上線前建立的）是 null
+    pickup_number: Optional[int] = None
+    called_at: Optional[datetime] = None
+    call_count: int = 0
     items: List[DineInOrderItemOut]
 
     class Config:
