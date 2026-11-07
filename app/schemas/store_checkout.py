@@ -22,6 +22,8 @@ class MemberCodeLookupOut(BaseModel):
     email: Optional[str] = None
     loyalty_balance: int
     coupons: List[CouponOut]
+    # 2026-11 會員等級，讓店員看得到是不是金卡客人（純顯示用）
+    tier: Literal["regular", "silver", "gold"] = "regular"
 
 
 class StoreCheckoutCreate(BaseModel):

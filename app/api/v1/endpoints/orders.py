@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.api import deps
 from app.core.config import settings
 from app.database_async import AsyncSessionLocal, get_db
-from app.models import Order, OrderItem
+from app.models import LoyaltyTransaction, Order, OrderItem
 from app.models import Product as ProductModel
 from app.schemas.order import (
     OrderCheckoutOut,
@@ -40,16 +40,17 @@ def _generate_merchant_trade_no() -> str:
     return f"O{datetime.now(UTC).strftime('%y%m%d%H%M%S')}{secrets.token_hex(2)}"
 
 
-def _to_order_out(order: Order) -> OrderOut:
-    # points_earned 是算出來的（不是存在 DB 的欄位），跟實際發點邏輯共用同一個
-    # calc_earned_points，確保顯示數字跟 LoyaltyTransaction 真正入帳的數字一致。
-    # "shipped" 也算——出貨只是付款完成後的後續狀態，earn_points 是在 status 變成
-    # "paid" 那一刻就已經真的發放了，不是等出貨才發，這裡只是沿用已經發生過的事實。
-    points_earned = (
-        loyalty_service.calc_earned_points(order.total_amount)
-        if order.status in ("paid", "shipped")
-        else 0
+async def _to_orders_out(db: AsyncSession, orders: list[Order]) -> list[OrderOut]:
+    # points_earned 不是存在 DB 的欄位：2026-11 會員等級上線後，入帳點數取決於
+    # 當時的等級倍率，不能再用 calc_earned_points(total) 重算，改成直接加總
+    # LoyaltyTransaction 裡這張訂單實際入帳的 earn 點數（一次查完，避免 N+1）
+    earned = await loyalty_service.earned_points_by_related(
+        db, LoyaltyTransaction.related_order_id, [o.id for o in orders]
     )
+    return [_to_order_out(o, earned.get(o.id, 0)) for o in orders]
+
+
+def _to_order_out(order: Order, points_earned: int = 0) -> OrderOut:
     return OrderOut(
         id=order.id,
         status=order.status,
@@ -90,7 +91,7 @@ async def get_my_orders(
     )
     result = await db.execute(query)
     orders = result.scalars().all()
-    return [_to_order_out(order) for order in orders]
+    return await _to_orders_out(db, orders)
 
 
 @router.post("", response_model=OrderOut, status_code=201)
@@ -246,7 +247,7 @@ async def create_order(
     query = select(Order).where(Order.id == order_id).options(ORDER_LOAD_OPTIONS)
     result = await db.execute(query)
     order = result.scalars().first()
-    return _to_order_out(order)
+    return (await _to_orders_out(db, [order]))[0]
 
 
 @router.post("/{order_id}/cancel", response_model=OrderOut)
@@ -306,7 +307,7 @@ async def cancel_order(
 
     query = select(Order).where(Order.id == order_id).options(ORDER_LOAD_OPTIONS)
     result = await db.execute(query)
-    return _to_order_out(result.scalars().first())
+    return (await _to_orders_out(db, [result.scalars().first()]))[0]
 
 
 @router.post("/{order_id}/checkout", response_model=OrderCheckoutOut)
@@ -363,6 +364,7 @@ async def create_order_checkout(
 @router.post("/ecpay/callback")
 async def ecpay_callback(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -414,21 +416,22 @@ async def ecpay_callback(
             )
         return PlainTextResponse("1|OK")
 
+    tier_result = None
+    order_user_id = order.user_id
     try:
         if params.get("RtnCode") == "1":
             order.status = "paid"
             order.payment_reference = params.get("TradeNo")
             order.paid_at = datetime.now(UTC)
 
-            earned_points = loyalty_service.calc_earned_points(order.total_amount)
-            if earned_points > 0:
-                await loyalty_service.earn_points(
-                    db,
-                    order.user_id,
-                    earned_points,
-                    reason=f"網購訂單 #{order.id} 消費回饋",
-                    related_order_id=order.id,
-                )
+            # 2026-11 會員等級：倍率、升等判斷與升等禮券都在 process_tier_earn 裡
+            tier_result = await loyalty_service.process_tier_earn(
+                db,
+                order_user_id,
+                order.total_amount,
+                reason_prefix=f"網購訂單 #{order.id} 消費回饋",
+                related_order_id=order.id,
+            )
         else:
             order.status = "failed"
 
@@ -437,6 +440,19 @@ async def ecpay_callback(
         await db.rollback()
         print(f"DEBUG: 處理 ECPay callback 失敗: {e}")
         return PlainTextResponse("0|ProcessError")
+
+    if tier_result and tier_result["upgraded_to"]:
+        tier = tier_result["upgraded_to"]
+        title, body = loyalty_service.tier_upgrade_push_text(tier)
+        background_tasks.add_task(
+            send_user_push_notifications,
+            AsyncSessionLocal,
+            order_user_id,
+            "mynotification",
+            title,
+            body,
+            loyalty_service.tier_upgrade_push_data(tier, tier_result["coupon_id"]),
+        )
 
     return PlainTextResponse("1|OK")
 
@@ -461,7 +477,7 @@ async def list_orders_for_staff(
     )
     result = await db.execute(query)
     orders = result.scalars().all()
-    return [_to_order_out(order) for order in orders]
+    return await _to_orders_out(db, orders)
 
 
 @router.patch("/{order_id}/status", response_model=OrderOut)
@@ -513,4 +529,4 @@ async def update_order_status(
     query = select(Order).where(Order.id == order_id).options(ORDER_LOAD_OPTIONS)
     result = await db.execute(query)
     order = result.scalars().first()
-    return _to_order_out(order)
+    return (await _to_orders_out(db, [order]))[0]

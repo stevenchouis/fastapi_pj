@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.database_async import AsyncSessionLocal, get_db
-from app.models import Coupon, StoreCheckout, User
+from app.models import Coupon, LoyaltyTransaction, StoreCheckout, User
 from app.schemas.store_checkout import (
     MemberCodeLookupOut,
     MemberCodeLookupRequest,
@@ -27,11 +27,19 @@ def _hash_member_code(code: str) -> str:
     return hashlib.sha256(code.encode()).hexdigest()
 
 
-def _to_store_checkout_out(checkout: StoreCheckout) -> StoreCheckoutOut:
-    # points_earned 是算出來的（不是存在 DB 的欄位），付款當下就是最終值——
-    # 門市收銀的現金/街口支付視為當下已完成付款，沒有像 Order 那樣要等
-    # callback 確認的中繼態，所以這裡永遠回實際已入帳的點數，不需要看 status
-    points_earned = loyalty_service.calc_earned_points(checkout.total_amount)
+async def _to_store_checkouts_out(
+    db: AsyncSession, checkouts: list[StoreCheckout]
+) -> list[StoreCheckoutOut]:
+    # points_earned 不是存在 DB 的欄位：2026-11 會員等級上線後，入帳點數取決於
+    # 當時的等級倍率，不能再用 calc_earned_points(total) 重算，改成直接加總
+    # LoyaltyTransaction 裡這筆結帳實際入帳的 earn 點數（一次查完，避免 N+1）
+    earned = await loyalty_service.earned_points_by_related(
+        db, LoyaltyTransaction.related_store_checkout_id, [c.id for c in checkouts]
+    )
+    return [_to_store_checkout_out(c, earned.get(c.id, 0)) for c in checkouts]
+
+
+def _to_store_checkout_out(checkout: StoreCheckout, points_earned: int = 0) -> StoreCheckoutOut:
     return StoreCheckoutOut(
         id=checkout.id,
         user_id=checkout.user_id,
@@ -63,7 +71,7 @@ async def get_my_store_checkouts(
     )
     result = await db.execute(query)
     checkouts = result.scalars().all()
-    return [_to_store_checkout_out(c) for c in checkouts]
+    return await _to_store_checkouts_out(db, checkouts)
 
 
 @router.post("/lookup", response_model=MemberCodeLookupOut)
@@ -101,6 +109,7 @@ async def lookup_member_code(
         email=user.email,
         loyalty_balance=user.loyalty_balance,
         coupons=coupons,
+        tier=await loyalty_service.get_tier_for_user(db, user.id),
     )
 
 
@@ -237,17 +246,16 @@ async def create_store_checkout(
                 )
 
         # 現金/街口支付視為當下已完成付款，直接發放消費回饋點數，不像 Order
-        # 要等 ECPay callback 確認才發
-        earned_points = loyalty_service.calc_earned_points(total_amount)
-        if earned_points > 0:
-            await loyalty_service.earn_points(
-                db,
-                member_user_id,
-                earned_points,
-                reason=f"門市收銀消費回饋：#{checkout_id}",
-                related_store_checkout_id=checkout_id,
-                restaurant_id=current_user.restaurant_id,
-            )
+        # 要等 ECPay callback 確認才發；2026-11 會員等級的倍率、升等判斷與
+        # 升等禮券都在 process_tier_earn 裡
+        tier_result = await loyalty_service.process_tier_earn(
+            db,
+            member_user_id,
+            total_amount,
+            reason_prefix=f"門市收銀消費回饋：#{checkout_id}",
+            related_store_checkout_id=checkout_id,
+            restaurant_id=current_user.restaurant_id,
+        )
 
         await db.commit()
     except HTTPException:
@@ -275,4 +283,17 @@ async def create_store_checkout(
         },
     )
 
-    return _to_store_checkout_out(checkout)
+    if tier_result["upgraded_to"]:
+        tier = tier_result["upgraded_to"]
+        title, body = loyalty_service.tier_upgrade_push_text(tier)
+        background_tasks.add_task(
+            send_user_push_notifications,
+            AsyncSessionLocal,
+            member_user_id,
+            "mynotification",
+            title,
+            body,
+            loyalty_service.tier_upgrade_push_data(tier, tier_result["coupon_id"]),
+        )
+
+    return (await _to_store_checkouts_out(db, [checkout]))[0]

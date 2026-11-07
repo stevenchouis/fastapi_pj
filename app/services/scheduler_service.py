@@ -9,6 +9,7 @@ from sqlalchemy import extract, func, select, update
 from app.core.config import settings
 from app.database_async import AsyncSessionLocal  #
 from app.models import Coupon, LoyaltyTransaction, User  #
+from app.services import loyalty_service
 from app.services.push_service import send_user_push_notifications
 
 # 2026-10：先前沒有明確指定 timezone，實際觸發時間取決於執行機器的系統時區
@@ -20,12 +21,16 @@ from app.services.push_service import send_user_push_notifications
 # 跟使用者確認後才套用。
 SCHEDULER_TIMEZONE = ZoneInfo("Asia/Taipei")
 
+# 生日禮券：基礎金額 × 會員等級倍數（2026-11 會員等級，plan-member-tier.md）
+BIRTHDAY_COUPON_BASE_AMOUNT = 100.0
+BIRTHDAY_COUPON_TIER_MULTIPLIER = {"regular": 1, "silver": 2, "gold": 3}
+
 
 async def send_birthday_coupons_async_task():
     """執行非同步發券與通知任務"""
     # 記錄本次實際發券成功的對象，等資料庫交易 commit 完才觸發推播
     # （撈資料/寫DB → 關閉交易 → 再發推播，避免推播卡住交易）
-    issued: list[tuple[int, int]] = []  # (user_id, coupon_id)
+    issued: list[tuple[int, int, int]] = []  # (user_id, coupon_id, amount)
 
     async with AsyncSessionLocal() as db:
         try:
@@ -63,18 +68,20 @@ async def send_birthday_coupons_async_task():
                 if dup_result.first():
                     continue
 
-                # 2. 建立新優惠券
+                # 2. 建立新優惠券——2026-11 會員等級：金額依「發券當下」的等級加碼
+                tier = await loyalty_service.get_tier_for_user(db, user.id)
+                amount = BIRTHDAY_COUPON_BASE_AMOUNT * BIRTHDAY_COUPON_TIER_MULTIPLIER[tier]
                 new_coupon = Coupon(
                     user_id=user.id,
                     title=coupon_title,
-                    discount_amount=100.0,
+                    discount_amount=amount,
                     expired_at=expired_dt,
                     is_used=False,
                 )
                 db.add(new_coupon)
                 await db.flush()  # 取得 coupon_id 以便放入通知數據
                 issued_count += 1
-                issued.append((user.id, new_coupon.id))
+                issued.append((user.id, new_coupon.id, int(amount)))
 
             await db.commit()  #
             skipped_count = len(birthday_users) - issued_count
@@ -89,14 +96,14 @@ async def send_birthday_coupons_async_task():
 
     # 優惠券交易已 commit 完成後才發推播；send_user_push_notifications 會自己
     # 建立 NotificationLog 並觸發真實 Expo 推播，這裡不用再手動寫通知紀錄
-    for user_id, coupon_id in issued:
+    for user_id, coupon_id, amount in issued:
         try:
             await send_user_push_notifications(
                 AsyncSessionLocal,
                 user_id,
                 "mynotification",
                 "🎂 生日禮物已送達！",
-                "下個月就是您的生日，100元優惠券已存入您的帳戶。",
+                f"下個月就是您的生日，{amount}元優惠券已存入您的帳戶。",
                 {"coupon_id": coupon_id, "screen": "Coupons"},
             )
         except Exception as e:

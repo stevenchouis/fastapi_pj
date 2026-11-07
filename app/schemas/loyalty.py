@@ -1,5 +1,5 @@
 # app/schemas/loyalty.py
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel
@@ -7,6 +7,14 @@ from pydantic import BaseModel
 
 class LoyaltyBalanceOut(BaseModel):
     balance: int
+    # 2026-11 會員等級（跟 mynotification plan-member-tier.md 對過的契約），
+    # 每次查詢即時計算，不存 DB；只加欄位，舊版 App 不受影響
+    tier: Literal["regular", "silver", "gold"]
+    year_spend: int  # 今年（台灣時間）累計實付消費
+    next_tier: Optional[Literal["silver", "gold"]] = None  # 金卡為 null
+    amount_to_next_tier: Optional[int] = None  # 金卡為 null
+    tier_expires_at: Optional[date] = None  # 一般會員為 null
+    earn_multiplier: float
 
 
 class MemberCodeOut(BaseModel):

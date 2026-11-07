@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.database_async import AsyncSessionLocal, get_db
-from app.models import DailyPickupCounter, DineInOrder, DineInOrderItem, Table
+from app.models import DailyPickupCounter, DineInOrder, DineInOrderItem, LoyaltyTransaction, Table
 from app.models import MenuItem as MenuItemModel
 from app.schemas.dine_in_order import (
     DineInOrderCreate,
@@ -59,15 +59,17 @@ async def _next_pickup_number(db: AsyncSession, restaurant_id: int, business_dat
     return result.scalar_one()
 
 
-def _to_order_out(order: DineInOrder) -> DineInOrderOut:
-    # points_earned 是算出來的（不是存在 DB 的欄位），跟實際發點邏輯
-    # （update_dine_in_order_status）用同一個判斷條件、同一個換算函式，
-    # 確保這裡顯示的數字跟 LoyaltyTransaction 裡真正入帳的數字一致
-    points_earned = (
-        loyalty_service.calc_earned_points(order.total_amount)
-        if order.status == "completed"
-        else 0
+async def _to_orders_out(db: AsyncSession, orders: list[DineInOrder]) -> list[DineInOrderOut]:
+    # points_earned 不是存在 DB 的欄位：2026-11 會員等級上線後，入帳點數取決於
+    # 當時的等級倍率，不能再用 calc_earned_points(total) 重算，改成直接加總
+    # LoyaltyTransaction 裡這張訂單實際入帳的 earn 點數（一次查完，避免 N+1）
+    earned = await loyalty_service.earned_points_by_related(
+        db, LoyaltyTransaction.related_dine_in_order_id, [o.id for o in orders]
     )
+    return [_to_order_out(o, earned.get(o.id, 0)) for o in orders]
+
+
+def _to_order_out(order: DineInOrder, points_earned: int = 0) -> DineInOrderOut:
     return DineInOrderOut(
         id=order.id,
         user_id=order.user_id,
@@ -285,7 +287,7 @@ async def create_dine_in_order(
         order.restaurant_id,
     )
 
-    return _to_order_out(order)
+    return (await _to_orders_out(db, [order]))[0]
 
 
 @router.get("/me", response_model=List[DineInOrderOut])
@@ -302,7 +304,7 @@ async def get_my_dine_in_orders(
     )
     result = await db.execute(query)
     orders = result.scalars().all()
-    return [_to_order_out(order) for order in orders]
+    return await _to_orders_out(db, orders)
 
 
 @router.get("", response_model=List[DineInOrderOut])
@@ -330,13 +332,14 @@ async def list_dine_in_orders(
     )
     result = await db.execute(query)
     orders = result.scalars().all()
-    return [_to_order_out(order) for order in orders]
+    return await _to_orders_out(db, orders)
 
 
 @router.patch("/{dine_in_order_id}/status", response_model=DineInOrderOut)
 async def update_dine_in_order_status(
     dine_in_order_id: int,
     payload: DineInOrderStatusUpdate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(deps.get_current_staff_user),
 ):
@@ -368,18 +371,20 @@ async def update_dine_in_order_status(
         if payload.payment_method is None:
             raise HTTPException(status_code=400, detail="標記已收款需要帶收款方式")
 
+    tier_result = None
+    order_user_id = order.user_id
     try:
         newly_completed = payload.status == "completed" and order.status != "completed"
         order.status = payload.status
         if payload.status == "completed":
             order.payment_method = payload.payment_method
         if newly_completed:
-            earned = loyalty_service.calc_earned_points(order.total_amount)
-            await loyalty_service.earn_points(
+            # 2026-11 會員等級：倍率、升等判斷與升等禮券都在 process_tier_earn 裡
+            tier_result = await loyalty_service.process_tier_earn(
                 db,
-                order.user_id,
-                earned,
-                reason=f"消費回饋：堂食訂單 #{order.id}",
+                order_user_id,
+                order.total_amount,
+                reason_prefix=f"消費回饋：堂食訂單 #{order.id}",
                 related_dine_in_order_id=order.id,
                 restaurant_id=order.restaurant_id,
             )
@@ -389,13 +394,26 @@ async def update_dine_in_order_status(
         print(f"DEBUG: 更新堂食訂單狀態失敗: {e}")
         raise HTTPException(status_code=500, detail="更新訂單狀態失敗")
 
+    if tier_result and tier_result["upgraded_to"]:
+        tier = tier_result["upgraded_to"]
+        title, body = loyalty_service.tier_upgrade_push_text(tier)
+        background_tasks.add_task(
+            send_user_push_notifications,
+            AsyncSessionLocal,
+            order_user_id,
+            "mynotification",
+            title,
+            body,
+            loyalty_service.tier_upgrade_push_data(tier, tier_result["coupon_id"]),
+        )
+
     query = (
         select(DineInOrder)
         .where(DineInOrder.id == dine_in_order_id)
         .options(*DINE_IN_ORDER_LOAD_OPTIONS)
     )
     result = await db.execute(query)
-    return _to_order_out(result.scalars().first())
+    return (await _to_orders_out(db, [result.scalars().first()]))[0]
 
 
 @router.post("/{dine_in_order_id}/call", response_model=DineInOrderOut)
@@ -467,7 +485,7 @@ async def call_dine_in_order(
         },
     )
 
-    return _to_order_out(order)
+    return (await _to_orders_out(db, [order]))[0]
 
 
 @router.post("/{dine_in_order_id}/cancel", response_model=DineInOrderOut)
@@ -529,4 +547,4 @@ async def cancel_dine_in_order(
         .options(*DINE_IN_ORDER_LOAD_OPTIONS)
     )
     result = await db.execute(query)
-    return _to_order_out(result.scalars().first())
+    return (await _to_orders_out(db, [result.scalars().first()]))[0]

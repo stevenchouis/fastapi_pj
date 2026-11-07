@@ -12,6 +12,7 @@ from app.api import deps
 from app.database_async import get_db
 from app.models import LoyaltyTransaction, User
 from app.schemas.loyalty import LoyaltyBalanceOut, LoyaltyTransactionOut, MemberCodeOut
+from app.services import loyalty_service
 
 router = APIRouter()
 
@@ -20,10 +21,15 @@ MEMBER_CODE_EXPIRE_MINUTES = 10
 
 @router.get("/me", response_model=LoyaltyBalanceOut)
 async def get_my_loyalty_balance(
+    db: AsyncSession = Depends(get_db),
     current_user=Depends(deps.get_current_user),
 ):
-    """回傳目前登入使用者的點數餘額，直接讀 User.loyalty_balance（權威資料）。"""
-    return LoyaltyBalanceOut(balance=current_user.loyalty_balance)
+    """
+    回傳目前登入使用者的點數餘額（直接讀 User.loyalty_balance，權威資料），
+    以及 2026-11 會員等級資訊（loyalty_service.get_member_tier_info 即時計算）。
+    """
+    tier_info = await loyalty_service.get_member_tier_info(db, current_user.id)
+    return LoyaltyBalanceOut(balance=current_user.loyalty_balance, **tier_info)
 
 
 @router.post("/member-code", response_model=MemberCodeOut)
