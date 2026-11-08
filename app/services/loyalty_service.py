@@ -7,7 +7,10 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import DineInOrder, LoyaltyTransaction, Order, StoreCheckout, User
+from app.database_async import AsyncSessionLocal
+from app.services import referral_service
 from app.services.coupon_service import build_coupon
+from app.services.push_service import send_user_push_notifications
 
 # 以下都是先卡位用的預設常數，之後如需調整比例，直接改這裡即可（不涉及 schema/migration）：
 # 消費 NT$100 得 1 點（無條件捨去）
@@ -243,7 +246,47 @@ async def process_tier_earn(
         await db.flush()
         coupon_id = coupon.id
 
-    return {"earned_points": earned_points, "upgraded_to": upgraded_to, "coupon_id": coupon_id}
+    # 2026-11 推薦好友：被推薦的新會員第一筆消費完成 → 推薦人拿券（沒被推薦或不是首購回 None）
+    referral = await referral_service.process_first_purchase(db, user_id)
+
+    return {
+        "earned_points": earned_points,
+        "upgraded_to": upgraded_to,
+        "coupon_id": coupon_id,
+        "referral": referral,
+    }
+
+
+def queue_reward_pushes(background_tasks, user_id: int, result: dict | None) -> None:
+    """
+    process_tier_earn 的結果在呼叫端 commit 之後，用這支排推播（三個賺點觸發點共用）：
+    升等推播給消費者本人、推薦獎勵推播給推薦人。result 是 None（例如付款失敗）就不做事。
+    """
+    if not result:
+        return
+    if result["upgraded_to"]:
+        tier = result["upgraded_to"]
+        title, body = tier_upgrade_push_text(tier)
+        background_tasks.add_task(
+            send_user_push_notifications,
+            AsyncSessionLocal,
+            user_id,
+            "mynotification",
+            title,
+            body,
+            tier_upgrade_push_data(tier, result["coupon_id"]),
+        )
+    if result.get("referral"):
+        ref = result["referral"]
+        background_tasks.add_task(
+            send_user_push_notifications,
+            AsyncSessionLocal,
+            ref["referrer_id"],
+            "mynotification",
+            "推薦好友成功！",
+            f"您推薦的好友完成第一筆消費，送您一張 ${int(referral_service.REFERRER_COUPON_AMOUNT)} 推薦好友禮券",
+            {"type": "referral_rewarded", "screen": "Coupons", "coupon_id": ref["coupon_id"]},
+        )
 
 
 def tier_upgrade_push_text(tier: str) -> tuple[str, str]:

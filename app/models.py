@@ -56,6 +56,13 @@ class User(Base):
     # 已被使用、或已重新產生過就是 None）。使用者手動按按鈕產生，不是自動輪替。
     member_code_hash = Column(String, nullable=True, index=True)
     member_code_expires_at = Column(DateTime(timezone=True), nullable=True)
+    # 2026-11 推薦好友：註冊時間（判斷「註冊 7 天內才能補填推薦碼」）。這個欄位之前
+    # 不存在，migration 刻意不回填既有帳號（維持 NULL＝補填期限已過），只有之後
+    # 新建立的帳號才由 server_default 帶入建立時間。
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+    # 2026-11 推薦好友：固定 6 碼推薦碼（大寫英數、去掉 0/O/1/I），第一次查詢
+    # GET /referrals/me 時才產生（referral_service.ensure_referral_code），刪帳號時清空
+    referral_code = Column(String(6), unique=True, index=True, nullable=True)
 
     # 建立與 PushToken 的關聯
     push_tokens = relationship(
@@ -616,6 +623,32 @@ class DailyCheckIn(Base):
     check_in_date = Column(Date, nullable=False)  # 台灣當地日期（00:00 換日）
     streak = Column(Integer, nullable=False)  # 含這天在內的連續天數
     points = Column(Integer, nullable=False)  # 這天領到的點數
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Referral(Base):
+    """
+    2026-11 推薦好友：一位被推薦的新會員只有一列（referee_id unique），填碼當下建立
+    並發 $50 券給新會員；新會員第一筆消費完成時（三個賺點觸發點，見
+    referral_service.process_first_purchase）記下 first_purchase_at，推薦人當年度
+    還沒領滿 10 次就發 $100 券並記 referrer_rewarded_at。券外鍵 ON DELETE SET NULL，
+    因為刪帳號會先刪未使用的券。
+    """
+
+    __tablename__ = "referrals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    referrer_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    referee_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
+    referee_coupon_id = Column(
+        Integer, ForeignKey("coupons.id", ondelete="SET NULL"), nullable=True
+    )
+    first_purchase_at = Column(DateTime(timezone=True), nullable=True)
+    # 推薦人有沒有拿到獎勵：首購時推薦人當年度已領滿 10 次就維持 NULL（之後也不補發）
+    referrer_rewarded_at = Column(DateTime(timezone=True), nullable=True)
+    referrer_coupon_id = Column(
+        Integer, ForeignKey("coupons.id", ondelete="SET NULL"), nullable=True
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

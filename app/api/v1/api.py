@@ -16,6 +16,7 @@ from app.api.v1.endpoints import (
     orders,
     products,
     promotions,
+    referrals,
     restaurants,
     search,
     store_checkouts,
@@ -69,3 +70,4 @@ api_router.include_router(
     hero_banners.router, prefix="/hero-banners", tags=["hero-banners"]
 )
 api_router.include_router(check_in.router, prefix="/check-in", tags=["check-in"])
+api_router.include_router(referrals.router, prefix="/referrals", tags=["referrals"])

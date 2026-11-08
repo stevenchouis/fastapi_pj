@@ -12,6 +12,8 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     birthday: date | None = None  # 新增生日欄位，允許為空
     password: str
+    # 2026-11 推薦好友：可選；有帶但無效 → 400 invalid_referral_code，整個註冊不成立
+    referral_code: str | None = None
 
 
 # 新增：更新使用者時需要的資料（使用 | None 取代 Optional）

@@ -224,6 +224,8 @@ alembic upgrade head
 
 **每日簽到（2026-11-08 由 mynotification 提出，詳見 `docs/daily-check-in.md`）：** 每天 1 點、每輪第 7 天 5 點（`CHECK_IN_REWARDS`，寫在 `app/api/v1/endpoints/check_in.py`），中斷從第 1 天重算，台灣時間 00:00 換日。`GET /check-in/status`、`POST /check-in`（201；今天已簽 409 `already_checked_in`）。新表 `DailyCheckIn`（migration `027c10b372e4`，`(user_id, check_in_date)` 唯一限制擋重複，streak 在簽到當下存入）。明細新 type **`check_in`**，跟 `earn` 一樣有 `remaining_amount`／`expires_at`：**`loyalty_service.POINT_LOT_TYPES = ("earn", "check_in")` 是 FIFO 扣點、到期收回、到期提醒三處查詢共用的常數**，新增同類 type 要加在這裡。不套等級倍率、不計入 `year_spend`、店員不擋。刪除帳號會一併刪簽到紀錄。
 
+**推薦好友（2026-11-08 由 mynotification 提出，詳見 `docs/referral.md`）：** 每人一組固定 6 碼推薦碼（`User.referral_code`，去掉 0/O/1/I、不分大小寫，第一次 `GET /referrals/me` 才產生）。新會員填碼拿 $50「好友推薦禮券」，推薦人等新會員首購拿 $100「推薦好友禮券」（30 天、連鎖層級），推薦人每年最多 10 次。`GET /referrals/me`、`POST /referrals/apply`（補填限註冊 7 天內＋沒消費過）、`POST /users/register` 新增可選 `referral_code`（無效整個註冊 400）。新表 `Referral`（`referee_id` unique）＋**新欄位 `User.created_at`**（migration `1f52a8bef9b6`，**既有帳號刻意維持 NULL＝補填期限已過**，只有新帳號才有註冊時間）。首購獎勵掛在 `process_tier_earn` 裡（`referral_service.process_first_purchase`），三個觸發點的推播統一改用 **`loyalty_service.queue_reward_pushes`**（升等＋推薦獎勵）。推播 `{"type": "referral_rewarded", "screen": "Coupons", "coupon_id"}`。刪除帳號會刪推薦紀錄並清空推薦碼。
+
 **App 內刪除帳號（2026-11-07 由 mynotification 提出，Google Play／App Store 上架要求，已上線）：** `DELETE /api/v1/users/me`（`app/api/v1/endpoints/users.py`，需登入），立即生效、沒有冷靜期。`role="staff"` 的帳號回 403（店員帳號要由管理者直接去 DB 處理，跟 `role` 本身沒有自助升級端點的慣例一致）。這次有三個「設計者決定」的點：
 
 - **刪除標記沿用既有的 `User.is_active`，沒有新增 `deleted_at`**——`login.py` 三種登入方式（密碼／Google／LINE）本來就已經在檢查 `is_active`，這次只是在 `app/api/deps.py` 的 `get_current_user` 補上同一個檢查（之前完全沒檢查，是個真的缺口），讓刪除帳號後發出過的舊 JWT 也會被擋（**401**，不是 404）；不需要兩個欄位表達同一件事。

@@ -15,6 +15,7 @@ from app.api.deps import get_current_user
 from app.core.security import pwd_context  # 引用你現有的物件
 from app.database_async import AsyncSessionLocal, get_db
 from app.schemas.user import User, UserUpdate  # 確保匯入新 Schema
+from app.services import referral_service
 from app.services.coupon_service import build_coupon
 from app.services.push_service import send_user_push_notifications
 
@@ -123,12 +124,19 @@ async def delete_user_me(
         )
         # 2026-11 每日簽到紀錄：純會員活動紀錄，跟點數明細一樣不需保留
         await db.execute(delete(models.DailyCheckIn).where(models.DailyCheckIn.user_id == user_id))
+        # 2026-11 推薦好友：被刪那方（推薦人或被推薦人）的推薦紀錄一併刪除；推薦碼在下面清空
+        await db.execute(
+            delete(models.Referral).where(
+                or_(models.Referral.referrer_id == user_id, models.Referral.referee_id == user_id)
+            )
+        )
         if old_email:
             await db.execute(delete(models.MagicLinkToken).where(models.MagicLinkToken.email == old_email))
 
         current_user.email = f"deleted-{user_id}@deleted.invalid"
         current_user.hashed_password = pwd_context.hash(secrets.token_urlsafe(32))
         current_user.nickname = None
+        current_user.referral_code = None
         current_user.birthday = None
         current_user.avatar_url = None
         current_user.google_id = None
@@ -182,6 +190,19 @@ async def create_user(
     db.add(welcome_coupon)
     await db.flush()  # 取得 coupon.id
     coupon_id = welcome_coupon.id
+
+    # 2026-11 推薦好友：有帶推薦碼就在同一個 transaction 記錄推薦關係＋發 $50 券；
+    # 碼無效整個註冊 rollback（plan 規定），空字串視同沒帶
+    if user_in.referral_code and user_in.referral_code.strip():
+        outcome, _, _ = await referral_service.apply_referral(
+            db, db_user, user_in.referral_code, check_window=False
+        )
+        if outcome != "ok":
+            await db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail={"error_code": "invalid_referral_code", "message": "推薦碼不存在"},
+            )
 
     await db.commit()
     await db.refresh(db_user)

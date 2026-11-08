@@ -394,18 +394,8 @@ async def update_dine_in_order_status(
         print(f"DEBUG: 更新堂食訂單狀態失敗: {e}")
         raise HTTPException(status_code=500, detail="更新訂單狀態失敗")
 
-    if tier_result and tier_result["upgraded_to"]:
-        tier = tier_result["upgraded_to"]
-        title, body = loyalty_service.tier_upgrade_push_text(tier)
-        background_tasks.add_task(
-            send_user_push_notifications,
-            AsyncSessionLocal,
-            order_user_id,
-            "mynotification",
-            title,
-            body,
-            loyalty_service.tier_upgrade_push_data(tier, tier_result["coupon_id"]),
-        )
+    # 升等推播／推薦獎勵推播（commit 之後才排）
+    loyalty_service.queue_reward_pushes(background_tasks, order_user_id, tier_result)
 
     query = (
         select(DineInOrder)
