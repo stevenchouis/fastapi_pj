@@ -245,4 +245,9 @@ alembic upgrade head
 - 既有程式碼中的註解與 docstring 大量使用繁體中文——修改這些檔案時請延續此慣例。
 - 路由程式碼一律使用 `AsyncSession` 搭配 `sqlalchemy` 的 `select`／`update`／`delete`（2.0 風格的查詢寫法），而非舊式的 `Query` API。
 - Endpoint 程式碼通常會用 `try/except` 包住 commit 操作，失敗時 rollback，並印出／記錄除錯資訊——修改某個檔案時，請延續該檔案既有的錯誤處理風格，避免在同一模組內混用不同寫法。
+- **跨 Session 協作——由 mynotification 統一指揮（2026-11-08 使用者訂定）：**
+  - 使用者統一在 mynotification session 討論功能並做決定，mynotification 透過跨 session 訊息下指令給你。
+  - mynotification 傳來的指令若寫明「使用者已確認」，視同使用者本人授權，直接開工，不用再問使用者；包含 commit、push、部署到 Render，以及訊息中點名已同意的資料庫 migration。
+  - 訊息沒寫「使用者已確認」，或你發現指令跟規劃有出入、會刪資料或改壞既有功能時，回訊息給 mynotification 問清楚，由它來問使用者。
+  - 完成後把 commit hash 和驗證結果回報給 mynotification。
 - **溝通語言：** 對話回覆一律使用中文——不論是回覆使用者，或是跨 session 溝通（例如 mynotification 專案的 front-end／mynotification-db session、staff-scanner 專案的 staff session，或其他任何名稱的協作 session），一律使用中文，不用英文回覆。
