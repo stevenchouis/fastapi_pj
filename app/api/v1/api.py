@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    check_in,
     coupons,
     dine_in_orders,
     favorites,
@@ -67,3 +68,4 @@ api_router.include_router(marquee.router, prefix="/marquee", tags=["marquee"])
 api_router.include_router(
     hero_banners.router, prefix="/hero-banners", tags=["hero-banners"]
 )
+api_router.include_router(check_in.router, prefix="/check-in", tags=["check-in"])

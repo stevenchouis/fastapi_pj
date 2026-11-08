@@ -19,6 +19,12 @@ MAX_REDEEM_RATIO = Decimal("0.5")
 # 每筆賺得的點數，自入帳日起幾天後過期
 EARN_EXPIRY_DAYS = 365
 
+# 會產生「一批有效期限的點數」的明細 type：有 remaining_amount／expires_at，
+# 會被折抵/兌換依到期日 FIFO 扣、到期收回、到期前提醒。2026-11 每日簽到的
+# check_in 跟消費回饋的 earn 一樣是這種；三處查詢（redeem_points、到期收回、
+# 到期提醒）都用這個常數，新增同類 type 時加在這裡即可。
+POINT_LOT_TYPES = ("earn", "check_in")
+
 # 2026-11 會員等級：門檻依自然年度（台灣時間）累計實付消費計算
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 TIER_RANK = {"regular": 0, "silver": 1, "gold": 2}
@@ -285,8 +291,12 @@ async def earn_points(
     related_dine_in_order_id: int | None = None,
     related_store_checkout_id: int | None = None,
     restaurant_id: int | None = None,
+    txn_type: str = "earn",
 ) -> None:
     """
+    txn_type 預設 "earn"（消費回饋）；每日簽到傳 "check_in"，兩者都是 POINT_LOT_TYPES，
+    入帳方式完全相同，只是明細 type 分開記。
+
     記一筆賺點：新增 type="earn" 的 LoyaltyTransaction（remaining_amount 初始等於
     amount，expires_at 為入帳日 + EARN_EXPIRY_DAYS 天），並原子性增加 User.loyalty_balance。
     不會自己 commit，交易邊界由呼叫端控制（方便跟訂單建立/狀態更新包在同一個 transaction）。
@@ -301,7 +311,7 @@ async def earn_points(
     db.add(
         LoyaltyTransaction(
             user_id=user_id,
-            type="earn",
+            type=txn_type,
             amount=amount,
             remaining_amount=amount,
             expires_at=datetime.now(UTC) + timedelta(days=EARN_EXPIRY_DAYS),
@@ -358,7 +368,7 @@ async def redeem_points(
         select(LoyaltyTransaction)
         .where(
             LoyaltyTransaction.user_id == user_id,
-            LoyaltyTransaction.type == "earn",
+            LoyaltyTransaction.type.in_(POINT_LOT_TYPES),
             LoyaltyTransaction.remaining_amount > 0,
         )
         .order_by(LoyaltyTransaction.expires_at.asc())

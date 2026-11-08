@@ -144,8 +144,9 @@ async def expire_loyalty_points_task():
 
     async with AsyncSessionLocal() as db:
         try:
+            # earn 跟 2026-11 每日簽到的 check_in 都會過期（loyalty_service.POINT_LOT_TYPES）
             query = select(LoyaltyTransaction).where(
-                LoyaltyTransaction.type == "earn",
+                LoyaltyTransaction.type.in_(loyalty_service.POINT_LOT_TYPES),
                 LoyaltyTransaction.remaining_amount > 0,
                 LoyaltyTransaction.expires_at <= now,
             )
@@ -206,8 +207,9 @@ async def send_points_expiry_reminder_task():
 
     async with AsyncSessionLocal() as db:
         try:
+            # earn 跟 2026-11 每日簽到的 check_in 都要提醒（loyalty_service.POINT_LOT_TYPES）
             query = select(LoyaltyTransaction).where(
-                LoyaltyTransaction.type == "earn",
+                LoyaltyTransaction.type.in_(loyalty_service.POINT_LOT_TYPES),
                 LoyaltyTransaction.remaining_amount > 0,
                 LoyaltyTransaction.expires_at > now,
                 LoyaltyTransaction.expires_at <= window_end,

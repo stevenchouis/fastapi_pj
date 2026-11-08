@@ -88,7 +88,7 @@ async def delete_user_me(
        額外 migration；而且 User 這邊已經清空所有識別資訊，保留「哪個帳號
        買的」這個事實本身不構成個資洩漏，跟一般電商「刪帳號不影響已完成
        訂單」的常見作法一致。
-    3. 紅利點數：LoyaltyTransaction 明細整批刪除、User.loyalty_balance 歸零
+    3. 紅利點數：LoyaltyTransaction 明細、DailyCheckIn 簽到紀錄整批刪除、User.loyalty_balance 歸零
        ——跟 Order 等「交易紀錄」不同，點數明細純粹是會員制度內部帳本，沒有
        保留義務，整批清掉比只歸零餘額更乾淨。
 
@@ -121,6 +121,8 @@ async def delete_user_me(
         await db.execute(
             delete(models.LoyaltyTransaction).where(models.LoyaltyTransaction.user_id == user_id)
         )
+        # 2026-11 每日簽到紀錄：純會員活動紀錄，跟點數明細一樣不需保留
+        await db.execute(delete(models.DailyCheckIn).where(models.DailyCheckIn.user_id == user_id))
         if old_email:
             await db.execute(delete(models.MagicLinkToken).where(models.MagicLinkToken.email == old_email))
 

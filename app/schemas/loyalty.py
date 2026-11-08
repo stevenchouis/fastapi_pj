@@ -50,7 +50,9 @@ class MemberCodeOut(BaseModel):
 
 class LoyaltyTransactionOut(BaseModel):
     id: int
-    type: Literal["earn", "redeem", "expire", "reverse_earn", "reverse_redeem", "exchange"]
+    type: Literal[
+        "earn", "redeem", "expire", "reverse_earn", "reverse_redeem", "exchange", "check_in"
+    ]
     amount: int
     reason: str
     related_order_id: Optional[int] = None

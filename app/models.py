@@ -601,6 +601,24 @@ class MagicLinkToken(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class DailyCheckIn(Base):
+    """
+    2026-11 每日簽到：一人一天一列。(user_id, check_in_date) 唯一限制在資料庫層擋重複，
+    兩支手機同時按也只有一個 INSERT 會成功。streak 在簽到當下存進來（昨天有簽＝昨天
+    的 streak + 1，否則 1），查狀態時不用回頭掃整段歷史。
+    """
+
+    __tablename__ = "daily_check_ins"
+    __table_args__ = (UniqueConstraint("user_id", "check_in_date"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    check_in_date = Column(Date, nullable=False)  # 台灣當地日期（00:00 換日）
+    streak = Column(Integer, nullable=False)  # 含這天在內的連續天數
+    points = Column(Integer, nullable=False)  # 這天領到的點數
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 ## alembic 更新DB作法:
 # 1. 編輯 models.py 定義好 ORM 類別
 # 2. 執行 alembic revision --autogenerate -m "新增User 和 Notificationlog relationship 1"
