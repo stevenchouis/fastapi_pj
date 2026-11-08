@@ -1,6 +1,11 @@
 # app/api/v1/endpoints/referrals.py
 """2026-11 推薦好友端點，規則見 app/services/referral_service.py 開頭的說明。"""
+import html
+import json
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +38,62 @@ def apply_error(outcome: str) -> HTTPException:
     return HTTPException(
         status_code=status_code, detail={"error_code": error_code, "message": message}
     )
+
+
+LANDING_TITLE = "寶雅電子商城 好友推薦"
+
+
+def _landing_html(body: str, deep_link: str | None) -> str:
+    # 有 deep link 才自動跳轉一次（手法比照 /login/magic-link/redirect）；推薦碼無效時不跳
+    auto = f"<script>window.location.replace({json.dumps(deep_link)});</script>" if deep_link else ""
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{LANDING_TITLE}</title>
+<style>
+  body {{ font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; margin: 0;
+         padding: 32px 20px; text-align: center; color: #222; background: #fafafa; }}
+  h1 {{ font-size: 20px; margin: 0 0 24px; }}
+  .code {{ font-size: 40px; font-weight: 700; letter-spacing: 6px; margin: 8px 0 16px; }}
+  .btn {{ display: inline-block; margin: 24px 0 16px; padding: 14px 32px; border-radius: 999px;
+          background: #e60012; color: #fff; text-decoration: none; font-size: 17px; }}
+  .note {{ font-size: 13px; color: #777; }}
+</style>
+{auto}
+</head>
+<body>
+<h1>{LANDING_TITLE}</h1>
+{body}
+</body>
+</html>"""
+
+
+@router.get("/landing", response_class=HTMLResponse)
+async def referral_landing(code: str = ""):
+    """
+    推薦連結的 https 中繼頁（公開，不需登入）：LINE 不會把 mynotification:// 自訂 scheme
+    變成可點的連結，所以分享出去的是這個 https 網址，再由這頁跳轉到 App
+    （做法比照 /login/magic-link/redirect）。純顯示，不消耗任何東西，可以重複開。
+
+    只檢查推薦碼格式（6 碼、字元都在 CODE_ALPHABET 內），**刻意不查 DB**，避免這頁
+    被拿來試出哪些推薦碼存在；碼是否真的存在留到註冊時由 /users/register 判斷。
+    通過格式檢查的碼只含大寫英數，仍一律 HTML escape／URL encode 後才輸出。
+    """
+    normalized = referral_service.normalize_code(code)
+    if not referral_service.is_valid_code_format(normalized):
+        body = '<p class="code">推薦碼無效</p><p class="note">請向分享給你的朋友確認連結是否完整。</p>'
+        return HTMLResponse(content=_landing_html(body, None))
+
+    deep_link = f"mynotification://register?ref={quote(normalized)}"
+    safe_code = html.escape(normalized)
+    safe_link = html.escape(deep_link, quote=True)
+    body = f"""<p class="code">{safe_code}</p>
+<p>註冊時輸入這組推薦碼，就能多拿一張 $50 優惠券</p>
+<a class="btn" href="{safe_link}">開啟 App 註冊</a>
+<p class="note">還沒安裝 App？請先安裝後，在註冊頁輸入上面的推薦碼</p>"""
+    return HTMLResponse(content=_landing_html(body, deep_link))
 
 
 @router.get("/me", response_model=ReferralMeOut)

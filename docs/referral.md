@@ -50,6 +50,14 @@
 
 **`POST /api/v1/users/register`** body 新增可選 `referral_code`：有效 → 同一個 transaction 記錄推薦關係＋發 $50 券；無效 → `400 invalid_referral_code`，整個註冊 rollback；空字串視同沒帶。
 
+**`GET /api/v1/referrals/landing?code=K7Q2MX`**（公開，不需登入，回 HTML；2026-11-08 追加）：推薦連結的 https 中繼頁。LINE 不會把 `mynotification://register?ref=XXX` 變成可點的連結，所以分享出去的是 `https://fastapi-pj-2.onrender.com/api/v1/referrals/landing?code=XXXXXX`，這頁再跳轉到 App（手法比照 `/login/magic-link/redirect`）。
+
+- 內容：標題「寶雅電子商城 好友推薦」、大字推薦碼、「註冊時輸入這組推薦碼，就能多拿一張 $50 優惠券」、「開啟 App 註冊」按鈕（`mynotification://register?ref=<code>`）、載入後自動 `window.location.replace` 跳轉一次、小字「還沒安裝 App？請先安裝後，在註冊頁輸入上面的推薦碼」。`<meta charset="utf-8">`＋手機 viewport。
+- 推薦碼先 normalize（去空白、轉大寫）；**只檢查格式**（6 碼、字元都在 `CODE_ALPHABET` 內，`referral_service.is_valid_code_format`），**刻意不查 DB**，避免這頁被拿來試出哪些推薦碼存在。格式不對（含沒帶 `code`）→ 顯示「推薦碼無效」、不跳轉、沒有按鈕。碼是否真的存在留到註冊時判斷。
+- 輸出前一律 HTML escape（屬性也 escape）、URL encode；JS 字串用 `json.dumps` 產生。
+- 純顯示，不消耗任何東西，可以重複開。之後上架再補商店連結。
+- 驗證：小寫＋前後空白的碼正確轉成大寫顯示、按鈕與自動跳轉的 deep link 正確、header 是 `text/html; charset=utf-8`；`abc`／含 0／7 碼／`OOOOOO`／空字串／沒帶參數／`"><script>…` 都顯示「推薦碼無效」，不出現 deep link、不出現注入的腳本。
+
 **推薦人獎勵推播**：`title`「推薦好友成功！」、`body`「您推薦的好友完成第一筆消費，送您一張 $100 推薦好友禮券」、`data` `{"type": "referral_rewarded", "screen": "Coupons", "coupon_id": <id>}`，`app_id="mynotification"`。新會員的 $50 券不另外推播。
 
 ## 資料

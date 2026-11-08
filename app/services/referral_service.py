@@ -42,6 +42,11 @@ def normalize_code(code: str) -> str:
     return code.strip().upper()
 
 
+def is_valid_code_format(code: str) -> bool:
+    """格式檢查（已 normalize 過的碼）：剛好 6 碼、每個字元都在 CODE_ALPHABET 內。不查 DB。"""
+    return len(code) == CODE_LENGTH and all(ch in CODE_ALPHABET for ch in code)
+
+
 def _generate_code() -> str:
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
 
