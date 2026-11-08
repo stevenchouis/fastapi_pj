@@ -10,8 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.database_async import get_db
-from app.models import LoyaltyTransaction, User
-from app.schemas.loyalty import LoyaltyBalanceOut, LoyaltyTransactionOut, MemberCodeOut
+from app.models import Coupon, LoyaltyTransaction, User
+from app.schemas.coupon import CouponOut
+from app.schemas.loyalty import (
+    ExchangeOptionOut,
+    ExchangeOptionsOut,
+    ExchangeOut,
+    ExchangeRequest,
+    LoyaltyBalanceOut,
+    LoyaltyTransactionOut,
+    MemberCodeOut,
+)
 from app.services import loyalty_service
 
 router = APIRouter()
@@ -30,6 +39,82 @@ async def get_my_loyalty_balance(
     """
     tier_info = await loyalty_service.get_member_tier_info(db, current_user.id)
     return LoyaltyBalanceOut(balance=current_user.loyalty_balance, **tier_info)
+
+
+@router.get("/exchange-options", response_model=ExchangeOptionsOut)
+async def get_exchange_options(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_user),
+):
+    """點數兌換優惠券目錄（寫死在 loyalty_service.EXCHANGE_OPTIONS）＋本月已兌換張數。"""
+    options = [
+        ExchangeOptionOut(
+            id=option_id,
+            title=o["title"],
+            points_cost=o["points_cost"],
+            discount_amount=o["discount_amount"],
+            valid_days=loyalty_service.EXCHANGE_COUPON_VALID_DAYS,
+        )
+        for option_id, o in loyalty_service.EXCHANGE_OPTIONS.items()
+    ]
+    used = await loyalty_service.count_exchanges_this_month(db, current_user.id)
+    return ExchangeOptionsOut(
+        options=options,
+        monthly_limit=loyalty_service.EXCHANGE_MONTHLY_LIMIT,
+        used_this_month=used,
+    )
+
+
+@router.post("/exchange", response_model=ExchangeOut, status_code=201)
+async def exchange_points(
+    payload: ExchangeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(deps.get_current_user),
+):
+    """
+    用點數兌換一張優惠券（2026-11，plan-points-exchange.md）。鎖使用者列→檢查月上限→
+    建券→FIFO 扣點（明細 type="exchange"）都在同一個 transaction，任一步失敗整筆 rollback，
+    不會出現「扣了點沒拿到券」或連點換到兩張。兌換後不能退回點數。
+    錯誤格式比照結帳折抵：detail 是帶 error_code 的物件。
+    """
+    if payload.option_id not in loyalty_service.EXCHANGE_OPTIONS:
+        raise HTTPException(status_code=404, detail="兌換品項不存在")
+
+    user_id = current_user.id
+    try:
+        outcome, coupon = await loyalty_service.exchange_points_for_coupon(
+            db, user_id, payload.option_id
+        )
+        if outcome == "limit":
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "exchange_limit_reached",
+                    "message": f"本月已兌換 {loyalty_service.EXCHANGE_MONTHLY_LIMIT} 張，請下個月再來",
+                },
+            )
+        if outcome == "insufficient":
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={"error_code": "insufficient_points", "message": "點數餘額不足"},
+            )
+        # commit 後物件屬性會過期（MissingGreenlet），id 先存成區域變數
+        coupon_id = coupon.id
+        await db.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        print(f"DEBUG: 點數兌換失敗: {e}")
+        raise HTTPException(status_code=500, detail="點數兌換失敗")
+
+    coupon = (await db.execute(select(Coupon).where(Coupon.id == coupon_id))).scalar_one()
+    balance = (
+        await db.execute(select(User.loyalty_balance).where(User.id == user_id))
+    ).scalar_one()
+    return ExchangeOut(coupon=CouponOut.model_validate(coupon), balance=balance)
 
 
 @router.post("/member-code", response_model=MemberCodeOut)

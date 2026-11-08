@@ -476,7 +476,8 @@ class LoyaltyTransaction(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
-    # earn（賺取）/ redeem（折抵）/ expire（過期收回）/ reverse（訂單取消退款收回或退還）
+    # earn（賺取）/ redeem（訂單折抵）/ expire（過期收回）/ reverse_earn / reverse_redeem
+    # （訂單取消收回或退還）/ exchange（兌換優惠券，2026-11）
     type = Column(String, nullable=False)
     amount = Column(Integer, nullable=False)  # 正整數，異動方向由 type 決定
     # 只有 type="earn" 的列會用到：初始等於 amount，之後被 redeem 依到期日 FIFO
@@ -498,6 +499,11 @@ class LoyaltyTransaction(Base):
     # 計算或折抵資格**——點數餘額仍是 User.loyalty_balance 單一帳戶層級，任何門市
     # 賺的點都能在任何門市折抵，這欄位只是讓「這筆消費/折抵是哪個門市」可追溯。
     restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=True)
+    # 2026-11 點數兌換優惠券：type="exchange" 的列記錄換到哪張券。ondelete SET NULL
+    # 是因為刪除帳號流程會先刪未使用的券、再刪點數明細，不設的話會撞外鍵
+    related_coupon_id = Column(
+        Integer, ForeignKey("coupons.id", ondelete="SET NULL"), nullable=True
+    )
 
     # 2026-10 點數即將到期提醒排程：這筆 earn 紀錄是否已經被「到期提醒」排程
     # 推播過，避免同一筆 earn 紀錄在到期前的提醒區間內被重複提醒；跟 remaining_amount

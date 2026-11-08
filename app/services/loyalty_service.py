@@ -29,6 +29,17 @@ EARN_MULTIPLIER = {"regular": Decimal("1"), "silver": Decimal("1.5"), "gold": De
 TIER_UPGRADE_COUPON_AMOUNT = {"silver": 100.0, "gold": 200.0}
 TIER_UPGRADE_COUPON_VALID_DAYS = 30
 
+# 2026-11 點數兌換優惠券：目錄寫死在這裡（plan-points-exchange.md，使用者 2026-11-07 定案），
+# 前端以 GET /loyalty/exchange-options 回傳為準、不寫死。key 是對外的 option_id，不能隨意改名。
+EXCHANGE_OPTIONS = {
+    "coupon_100": {"title": "$100 折價券", "points_cost": 90, "discount_amount": 100},
+    "coupon_300": {"title": "$300 折價券", "points_cost": 250, "discount_amount": 300},
+    "coupon_500": {"title": "$500 折價券", "points_cost": 400, "discount_amount": 500},
+}
+EXCHANGE_COUPON_VALID_DAYS = 30
+# 每人每月（台灣時間自然月）最多兌換張數，三種合計
+EXCHANGE_MONTHLY_LIMIT = 3
+
 
 def calc_earned_points(order_total: Decimal, multiplier: Decimal = Decimal("1")) -> int:
     """
@@ -317,12 +328,17 @@ async def redeem_points(
     related_dine_in_order_id: int | None = None,
     related_store_checkout_id: int | None = None,
     restaurant_id: int | None = None,
+    txn_type: str = "redeem",
+    related_coupon_id: int | None = None,
 ) -> bool:
     """
     折抵點數：先用原子性 UPDATE 扣減 User.loyalty_balance（餘額不足回傳 False，不寫入
     任何紀錄，由呼叫端決定要回什麼錯誤）；成功後依 expires_at 由舊到新，依序從尚有
-    remaining_amount 的 earn 列扣除（FIFO），最後補一筆 type="redeem" 的交易紀錄。
+    remaining_amount 的 earn 列扣除（FIFO），最後補一筆交易紀錄。
     不會自己 commit，交易邊界由呼叫端控制。
+
+    txn_type 預設 "redeem"（訂單折抵）；點數兌換優惠券傳 "exchange"——兩者扣點方式
+    完全相同，只是明細 type 分開記，避免訂單取消退點時誤把兌換的點數也當成折抵退回。
     """
     if amount <= 0:
         return True
@@ -358,16 +374,79 @@ async def redeem_points(
     db.add(
         LoyaltyTransaction(
             user_id=user_id,
-            type="redeem",
+            type=txn_type,
             amount=amount,
             reason=reason,
             related_order_id=related_order_id,
             related_dine_in_order_id=related_dine_in_order_id,
             related_store_checkout_id=related_store_checkout_id,
             restaurant_id=restaurant_id,
+            related_coupon_id=related_coupon_id,
         )
     )
     return True
+
+
+def _month_bounds(now: datetime) -> tuple[datetime, datetime]:
+    """回傳 now 所在月份（台灣時間）的起訖時間，皆含時區。"""
+    local = now.astimezone(TAIPEI_TZ)
+    start = datetime(local.year, local.month, 1, tzinfo=TAIPEI_TZ)
+    if local.month == 12:
+        end = datetime(local.year + 1, 1, 1, tzinfo=TAIPEI_TZ)
+    else:
+        end = datetime(local.year, local.month + 1, 1, tzinfo=TAIPEI_TZ)
+    return start, end
+
+
+async def count_exchanges_this_month(db: AsyncSession, user_id: int) -> int:
+    """本月（台灣時間自然月）已兌換張數，直接數 type="exchange" 的明細，不另開紀錄表。"""
+    start, end = _month_bounds(datetime.now(UTC))
+    result = await db.execute(
+        select(func.count()).where(
+            LoyaltyTransaction.user_id == user_id,
+            LoyaltyTransaction.type == "exchange",
+            LoyaltyTransaction.created_at >= start,
+            LoyaltyTransaction.created_at < end,
+        )
+    )
+    return result.scalar_one()
+
+
+async def exchange_points_for_coupon(db: AsyncSession, user_id: int, option_id: str):
+    """
+    點數兌換優惠券。option_id 必須是 EXCHANGE_OPTIONS 裡的 key（呼叫端先擋 404）。
+    先 SELECT ... FOR UPDATE 鎖住 User 列，序列化同一人連點的兩個請求，
+    再檢查月上限 → 建券（flush 拿 id）→ 扣點（type="exchange"，FIFO 同折抵）。
+    不會自己 commit；回傳 "limit"／"insufficient" 時呼叫端要 rollback（券才不會留下）。
+
+    回傳 (outcome, coupon)：("ok", Coupon)／("limit", None)／("insufficient", None)。
+    """
+    option = EXCHANGE_OPTIONS[option_id]
+    await db.execute(select(User.id).where(User.id == user_id).with_for_update())
+
+    if await count_exchanges_this_month(db, user_id) >= EXCHANGE_MONTHLY_LIMIT:
+        return "limit", None
+
+    coupon = build_coupon(
+        user_id=user_id,
+        title=option["title"],
+        discount_amount=float(option["discount_amount"]),
+        valid_days=EXCHANGE_COUPON_VALID_DAYS,
+    )
+    db.add(coupon)
+    await db.flush()
+
+    redeemed = await redeem_points(
+        db,
+        user_id,
+        option["points_cost"],
+        reason=f"兌換 {option['title']}",
+        txn_type="exchange",
+        related_coupon_id=coupon.id,
+    )
+    if not redeemed:
+        return "insufficient", None
+    return "ok", coupon
 
 
 async def reverse_redeem_points(

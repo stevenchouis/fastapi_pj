@@ -1,8 +1,10 @@
 # app/schemas/loyalty.py
 from datetime import date, datetime
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel
+
+from app.schemas.coupon import CouponOut
 
 
 class LoyaltyBalanceOut(BaseModel):
@@ -17,6 +19,29 @@ class LoyaltyBalanceOut(BaseModel):
     earn_multiplier: float
 
 
+class ExchangeOptionOut(BaseModel):
+    id: str  # 例如 "coupon_100"，POST /loyalty/exchange 的 option_id
+    title: str
+    points_cost: int
+    discount_amount: int
+    valid_days: int
+
+
+class ExchangeOptionsOut(BaseModel):
+    options: List[ExchangeOptionOut]
+    monthly_limit: int
+    used_this_month: int
+
+
+class ExchangeRequest(BaseModel):
+    option_id: str
+
+
+class ExchangeOut(BaseModel):
+    coupon: CouponOut  # 格式同 /coupons/me
+    balance: int  # 扣完的點數餘額
+
+
 class MemberCodeOut(BaseModel):
     # 明文碼只在這次回應中出現一次，資料庫只存 hash（做法比照 CouponRedeemCodeOut）
     code: str
@@ -25,12 +50,13 @@ class MemberCodeOut(BaseModel):
 
 class LoyaltyTransactionOut(BaseModel):
     id: int
-    type: Literal["earn", "redeem", "expire", "reverse_earn", "reverse_redeem"]
+    type: Literal["earn", "redeem", "expire", "reverse_earn", "reverse_redeem", "exchange"]
     amount: int
     reason: str
     related_order_id: Optional[int] = None
     related_dine_in_order_id: Optional[int] = None
     related_store_checkout_id: Optional[int] = None
+    related_coupon_id: Optional[int] = None  # 只有 type="exchange" 會有值
     restaurant_id: Optional[int] = None
     created_at: datetime
     expires_at: Optional[datetime] = None
