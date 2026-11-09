@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     SECRET_KEY: str  # 不給預設值，強迫從 .env 讀取
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    # 實機測「通行證過期後自動續期」用：逗號分隔的 user id，這些帳號的通行證效期改成
+    # SHORT_ACCESS_TOKEN_MINUTES 分鐘（只影響之後新發的通行證），測完清空即可
+    SHORT_ACCESS_TOKEN_USER_IDS: str = ""
+    SHORT_ACCESS_TOKEN_MINUTES: int = 1
     # 改為可選或提供預設值，避免啟動直接崩潰，或者保持原樣強制要求
     DATABASE_URL: str
     # Google 登入用：驗證 id_token 的 audience 要用這組 Web Client ID

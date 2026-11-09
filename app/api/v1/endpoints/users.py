@@ -119,6 +119,8 @@ async def delete_user_me(
 
     try:
         await db.execute(delete(models.PushToken).where(models.PushToken.user_id == user_id))
+        # 2026-11 登入自動續期：續期證全部刪除，刪帳號後不能再換證
+        await db.execute(delete(models.RefreshToken).where(models.RefreshToken.user_id == user_id))
         await db.execute(delete(models.NotificationLog).where(models.NotificationLog.user_id == user_id))
         await db.execute(delete(models.Favorite).where(models.Favorite.user_id == user_id))
         await db.execute(

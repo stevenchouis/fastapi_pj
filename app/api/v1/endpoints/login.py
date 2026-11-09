@@ -18,6 +18,7 @@ from app import models, schemas
 from app.core import security  # 假設你這裡有 create_access_token 邏輯
 from app.core.config import settings
 from app.database_async import get_db
+from app.services import auth_token_service
 from app.services.email_service import send_magic_link_email
 
 # from app.main4 import create_access_token
@@ -49,15 +50,8 @@ async def login_access_token(
     if not user.is_active:
         raise HTTPException(status_code=400, detail="帳號已被停用")
 
-    # 產生一個代表 30 分鐘長度的 timedelta 物件
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = security.create_access_token(
-        # subject=user.email,  # 這裡對應函式的 subject 參數
-        subject=str(user.id),  # 將 ID 轉為字串放入 sub
-        expires_delta=access_token_expires,
-    )
-    # access_token = security.create_access_token(data={"sub": user.email})
-    return {"access_token": access_token, "token_type": "bearer"}
+    # 2026-11 起回應多帶 refresh_token（舊版 App 忽略即可）
+    return await auth_token_service.login_response(db, user)
 
 
 @router.post("/login/google")
@@ -117,12 +111,7 @@ async def login_google(
     if not user.is_active:
         raise HTTPException(status_code=400, detail="帳號已被停用")
 
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = security.create_access_token(
-        subject=str(user.id),
-        expires_delta=access_token_expires,
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return await auth_token_service.login_response(db, user)
 
 
 @router.get("/login/line/redirect", response_class=HTMLResponse)
@@ -227,12 +216,7 @@ async def login_line(
     if not user.is_active:
         raise HTTPException(status_code=400, detail="帳號已被停用")
 
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = security.create_access_token(
-        subject=str(user.id),
-        expires_delta=access_token_expires,
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return await auth_token_service.login_response(db, user)
 
 
 @router.post("/login/magic-link/request", status_code=status.HTTP_204_NO_CONTENT)
@@ -353,9 +337,23 @@ async def verify_magic_link(
     if not user.is_active:
         raise HTTPException(status_code=400, detail="帳號已被停用")
 
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = security.create_access_token(
-        subject=str(user.id),
-        expires_delta=access_token_expires,
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return await auth_token_service.login_response(db, user)
+
+
+@router.post("/login/refresh")
+async def refresh_access_token(
+    payload: schemas.RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """用續期證換新的通行證＋新的續期證（舊的作廢）。不需要 Authorization header。
+    失敗一律 401 {"error_code": "invalid_refresh_token", ...}，前端收到就回登入頁。"""
+    return await auth_token_service.refresh(db, payload.refresh_token)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    payload: schemas.RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """作廢這張續期證；找不到也回 204。已發出的通行證會在效期到時自然失效。"""
+    await auth_token_service.logout(db, payload.refresh_token)

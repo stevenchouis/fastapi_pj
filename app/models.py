@@ -689,3 +689,28 @@ class Referral(Base):
 # 1. 編輯 models.py 定義好 ORM 類別
 # 2. 執行 alembic revision --autogenerate -m "新增User 和 Notificationlog relationship 1"
 # 3. 執行 alembic upgrade head
+
+
+class RefreshToken(Base):
+    """
+    2026-11 登入自動續期：每次登入發一張續期證（隨機字串，不是 JWT），DB 只存 SHA-256
+    雜湊。每次 POST /login/refresh 換證時舊的標記 rotated_at、發一張新的（rotation）。
+    - rotated_at：被換過證的時間；30 秒內同一張再被拿來用視為網路重送（寬限），
+      超過 30 秒視為偷用，作廢該使用者全部續期證
+    - revoked_at：被登出／偷用偵測／刪除帳號作廢的時間，作廢後寬限也不適用
+    - role：發證當下的角色，決定效期（customer 30 天、staff 7 天）；換證時角色
+      跟現在不同就視為無效（角色是直接改 DB 的，這樣不用額外掛觸發點）
+    """
+
+    __tablename__ = "refresh_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)
+    role = Column(String, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    rotated_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -3,7 +3,7 @@ from .line_auth import LineLoginRequest
 from .magic_link import MagicLinkRequest, MagicLinkVerify
 from .notification import NotificationLog, NotificationLogBase  # 新增的通知 Schema
 from .push_token import PushToken, PushTokenCreate
-from .token import Token, TokenData
+from .token import RefreshTokenRequest, Token, TokenData
 
 # from .user import User, UserCreate, UserUpdate  # 確保 User 有被導出
 from .user import User, UserCreate  # 確保 User 有被導出
@@ -13,6 +13,7 @@ from .user import User, UserCreate  # 確保 User 有被導出
 __all__ = [
     "Token",
     "TokenData",
+    "RefreshTokenRequest",
     "PushToken",
     "PushTokenCreate",
     "NotificationLog",
