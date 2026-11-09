@@ -3,10 +3,12 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
+from apscheduler.events import EVENT_JOB_ERROR
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import extract, func, select, update
 
 from app.core.config import settings
+from app.core.monitoring import capture_exception
 from app.database_async import SchedulerSessionLocal  # 排程一律用 NullPool 工廠，見 database_async 說明
 from app.models import Coupon, LoyaltyTransaction, User  #
 from app.services import loyalty_service, push_cleanup_service
@@ -92,6 +94,7 @@ async def send_birthday_coupons_async_task():
         except Exception as e:
             await db.rollback()  #
             print(f"排程任務執行失敗: {e}")
+            capture_exception(e, job="birthday_coupons")
             return
 
     # 優惠券交易已 commit 完成後才發推播；send_user_push_notifications 會自己
@@ -108,6 +111,7 @@ async def send_birthday_coupons_async_task():
             )
         except Exception as e:
             print(f"生日禮券推播失敗 user_id={user_id} coupon_id={coupon_id}: {e}")
+            capture_exception(e, job="birthday_coupons_push")
 
 
 def run_scheduler_bridge():
@@ -178,6 +182,7 @@ async def expire_loyalty_points_task():
         except Exception as e:
             await db.rollback()
             print(f"點數到期排程執行失敗: {e}")
+            capture_exception(e, job="loyalty_expiry")
 
 
 def run_loyalty_expiry_bridge():
@@ -228,6 +233,7 @@ async def send_points_expiry_reminder_task():
         except Exception as e:
             await db.rollback()
             print(f"點數到期提醒排程執行失敗: {e}")
+            capture_exception(e, job="points_expiry_reminder")
             return
 
     # 標記已 commit 完才發推播，比照既有慣例（撈資料/寫DB → 關閉交易 → 再發推播）
@@ -244,6 +250,7 @@ async def send_points_expiry_reminder_task():
             notified_users += 1
         except Exception as e:
             print(f"點數到期提醒推播失敗 user_id={user_id}: {e}")
+            capture_exception(e, job="points_expiry_reminder_push")
 
     print(
         f"[{datetime.now()}] 點數到期提醒排程完成，標記 {reminded_count} 筆 earn 紀錄、"
@@ -279,6 +286,7 @@ def run_push_receipt_check_bridge():
             print(f"[{datetime.now()}] 推播 receipt 檢查: {stats}")
     except Exception as e:
         print(f"[{datetime.now()}] 推播 receipt 檢查失敗: {e}")
+        capture_exception(e, job="push_receipt_check")
     finally:
         loop.close()
 
@@ -294,6 +302,7 @@ def run_stale_push_token_cleanup_bridge():
         print(f"[{datetime.now()}] 刪除 90 天沒出現的推播 token: {count} 筆")
     except Exception as e:
         print(f"[{datetime.now()}] 刪除過期推播 token 失敗: {e}")
+        capture_exception(e, job="stale_push_token_cleanup")
     finally:
         loop.close()
 
@@ -303,7 +312,14 @@ def run_stale_push_token_cleanup_bridge():
 scheduler = BackgroundScheduler(timezone=SCHEDULER_TIMEZONE)
 
 
+def _on_job_error(event):
+    """排程本身沒接住、往外丟的例外：APScheduler 在自己的執行緒接住後只會寫 log，
+    這裡轉送到 Sentry（2026-11 錯誤監控）。"""
+    capture_exception(event.exception, job=event.job_id)
+
+
 def start_scheduler():
+    scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)
     # 1. 正式任務：每月 25 日的台灣當地時間 00:00 執行
     scheduler.add_job(run_scheduler_bridge, "cron", day=25, hour=0, minute=0)
 

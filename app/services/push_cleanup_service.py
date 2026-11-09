@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, select
 
 from app import models
+from app.core.monitoring import capture_exception, capture_message
 from app.services.push_service import DEVICE_NOT_REGISTERED, push_client
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ async def check_push_receipts_task(db_factory, client=push_client) -> dict:
     except Exception as e:
         # 整批查詢失敗（Expo 掛掉、網路問題）：ticket 留著下次再查，24 小時後自然丟掉
         logger.error(f"查詢 Expo push receipt 失敗: {e}")
+        capture_exception(e, area="push_receipt")
         return stats
 
     done_ticket_ids, dead_tokens = [], set()
@@ -70,7 +72,9 @@ async def check_push_receipts_task(db_factory, client=push_client) -> dict:
             error = (receipt.details or {}).get("error")
             logger.warning(f"Expo receipt 錯誤 {error}: {receipt.message}")
             if error == DEVICE_NOT_REGISTERED:
-                dead_tokens.add(token_by_ticket[receipt.id])
+                dead_tokens.add(token_by_ticket[receipt.id])  # 預期中的情況，不送 Sentry
+            else:
+                capture_message(f"Expo push receipt 錯誤: {error} {receipt.message}", area="push_receipt")
     # 沒出現在回應裡的 ticket 代表 receipt 還沒好，留著下次再查
 
     async with db_factory() as db:
@@ -87,6 +91,7 @@ async def check_push_receipts_task(db_factory, client=push_client) -> dict:
         except Exception as e:
             await db.rollback()
             logger.error(f"套用 push receipt 結果失敗: {e}")
+            capture_exception(e, area="push_receipt")
             return stats
     stats.update(receipts=len(done_ticket_ids), dead_tokens=len(dead_tokens))
     if dead_tokens:
@@ -107,6 +112,7 @@ async def delete_stale_push_tokens_task(db_factory) -> int:
         except Exception as e:
             await db.rollback()
             logger.error(f"刪除過期推播 token 失敗: {e}")
+            capture_exception(e, area="push_cleanup")
             return 0
     count = result.rowcount or 0
     if count:

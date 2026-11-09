@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     items,
     account_deletion,
     login,
+    monitoring,
     loyalty,
     marquee,
     menu_items,
@@ -79,3 +80,4 @@ api_router.include_router(referrals.router, prefix="/referrals", tags=["referral
 api_router.include_router(
     account_deletion.router, prefix="/account-deletion", tags=["account-deletion"]
 )
+api_router.include_router(monitoring.router, prefix="/monitoring", tags=["monitoring"])

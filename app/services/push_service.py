@@ -6,6 +6,7 @@ from exponent_server_sdk import PushClient, PushMessage
 from sqlalchemy import delete, select
 
 from .. import models
+from ..core.monitoring import capture_exception, capture_message
 
 logger = logging.getLogger(__name__)
 push_client = PushClient()
@@ -63,6 +64,7 @@ async def _save_push_results(db_factory, tickets: list[tuple[str, str]], dead_to
             await db.commit()
     except Exception as e:
         logger.error(f"儲存推播 ticket／刪除失效 token 失敗: {e}")
+        capture_exception(e, area="push")
 
 
 async def _publish_to_tokens(
@@ -111,9 +113,12 @@ async def _publish_to_tokens(
                 error = (response.details or {}).get("error")
                 logger.error(f"❌ Expo 錯誤: {error} {response.message}")
                 if error == DEVICE_NOT_REGISTERED:
-                    dead_tokens.append(token)
+                    dead_tokens.append(token)  # 預期中的情況，不送 Sentry
+                else:
+                    capture_message(f"Expo 推播 ticket 錯誤: {error} {response.message}", area="push")
         except Exception as e:
             logger.error(f"🔥 發送異常: {e}")
+            capture_exception(e, area="push")
 
     if db_factory is not None:
         await _save_push_results(db_factory, tickets, dead_tokens)

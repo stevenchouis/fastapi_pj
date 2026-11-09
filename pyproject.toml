@@ -25,7 +25,8 @@ dependencies = [
     "httpx (>=0.28.1,<0.29.0)",
     "apscheduler (>=3.11.2,<4.0.0)",
     "google-auth (>=2.57.0,<3.0.0)",
-    "resend (>=2.42.0,<3.0.0)"
+    "resend (>=2.42.0,<3.0.0)",
+    "sentry-sdk[fastapi] (>=2.74.0,<3.0.0)"
 ]
 
 

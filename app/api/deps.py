@@ -1,6 +1,8 @@
 # app/api/deps.py
 import secrets
 
+import sentry_sdk
+
 from fastapi import Depends, Header, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -49,6 +51,8 @@ async def get_current_user(
     if not user.is_active:
         raise HTTPException(status_code=401, detail="帳號已被刪除或停用")
 
+    # 2026-11 錯誤監控：之後這個請求如果出錯，Sentry 事件只帶 user id（不帶 email 等個資）
+    sentry_sdk.set_user({"id": user.id})
     return user
 
 

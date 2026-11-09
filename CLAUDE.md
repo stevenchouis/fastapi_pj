@@ -253,6 +253,16 @@ alembic upgrade head
 
 **好友系統（2026-09-19 由 mynotification 提出，已上線，詳見 `docs/friends.md`）：** 顧客掃對方 QR Code 送好友邀請、對方確認後成立好友、好友間可送快速訊息推播（**不含點數互轉**，留給之後獨立的 plan）。`Friendship` model：`user_a_id`／`user_b_id` 建立時正規化成「較小 id、較大 id」＋`UniqueConstraint`，**同一對使用者只有一列**，`requester_id` 另記發起人，`status` 為 `pending`／`accepted`／`declined`（自由字串）。因此互相邀請（含雙方同時互掃）自動收斂成 `accepted`、拒絕後重新邀請把同一列改回 `pending`，不需要歷史表；狀態轉換都用原子性條件式 UPDATE。端點（`app/api/v1/endpoints/friends.py`，皆需登入）：`GET /friends`、`GET /friends/requests`（收到的 pending）、`POST /friends/requests`（201；自己加自己 400；已是好友 409 + `detail={"error_code": "already_friends"}`）、`POST /friends/requests/{id}/accept`、`POST /friends/requests/{id}/reject`（注意是 `reject` 不是 `decline`）、`POST /friends/{friendship_id}/greetings`（200 `{"ok": true}`，只有已接受的好友能送）。推播 `data` 一律 `{"type": "friend_request" | "friend_request_accepted" | "friend_greeting", "screen": "Friends", "friendship_id": <id>}`，跟前端對過的契約，不能隨意改。**`username`（好友 API 回應欄位名不變）＝ `User.nickname` 優先，沒填才退回 email 前綴遮罩（前 2 碼 + `***`），純 LINE 帳號為 `用戶{id}`，刻意不回傳完整 email（隱私）**；邏輯集中在 `friends.py` 的 `display_name()`，推播文案（`friend_request` 等帶對方名稱的）共用同一個函式。**`User.nickname`（2026-09-19，migration `e62e472e4275`，String nullable，不要求唯一）**：`GET /users/me` 回傳 `nickname`，`PUT /users/me` 的 `UserUpdate.nickname` 沒帶（`None`）＝不改、trim 後空字串／純空白＝清除（存 null）、超過 20 字回 422；註冊不強制填。同時移除了 `UserUpdate.username`（`User` model 從來沒有這個 column，PUT 一直是被靜默忽略；舊 client 仍送 `username` 不會報錯，一樣被忽略）。沒有解除好友端點、重新邀請沒有冷卻時間，皆為這期刻意不做。
 
+**錯誤監控／Sentry（2026-11-09 由 mynotification 提出，詳見 `docs/sentry.md`）：**
+- **啟用條件：** `app/core/monitoring.py` 的 `init_sentry()` 由 `main5.py` 在建立 app 前呼叫。`SENTRY_DSN` 沒設就不啟用；environment 在 Render 上是 `production`、其他地方是 `local`，可用 `SENTRY_ENVIRONMENT` 覆寫。
+- **回報範圍：**
+  - API 例外與 5xx：整合預設會抓。
+  - 排程往外丟的例外：APScheduler `EVENT_JOB_ERROR` 監聽器。
+  - 排程、推播、寄信裡被 `try/except` 吞掉的失敗：要明確呼叫 `monitoring.capture_exception`／`capture_message`。**新增排程或背景工作時，except 區塊記得加。**
+  - `DeviceNotRegistered` 不送。
+- **個資：** 不送 body／cookie／query string／區域變數；header 只留白名單；user 只帶 id；文字遮掉 Email、push token、SQL 參數、token 字串。logging 整合關閉。
+- **測試端點：** `POST /api/v1/monitoring/test-error`（`X-Admin-Key`），`?source=scheduler` 可測排程執行緒。
+
 **Model 結構補充：** `User` 對 `Order`、`Favorite`、`DineInOrder`、`Friendship`（`friendships_as_a`／`friendships_as_b`）皆為一對多（cascade 同其他子關聯，使用者刪除時一併刪除）；`Product` 對 `OrderItem`、`Favorite`（`favorited_by`）為一對多；`MenuItem` 對 `DineInOrderItem` 為一對多。
 
 ## 專案慣例

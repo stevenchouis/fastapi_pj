@@ -6,7 +6,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.api import api_router  # 匯入剛才封裝好的總路由
 from app.api.v1.endpoints import account_deletion
 from app.core.config import settings
+from app.core.monitoring import init_sentry
 from app.services.scheduler_service import scheduler, start_scheduler
+
+# 2026-11 錯誤監控：要在建立 FastAPI app 之前初始化，SENTRY_DSN 沒設就不啟用（見 docs/sentry.md）
+init_sentry()
 
 # 設定參數
 # SECRET_KEY = "mykey"  # 實務上請使用環境變數

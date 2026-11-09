@@ -3,6 +3,7 @@ import logging
 import httpx
 
 from app.core.config import settings
+from app.core.monitoring import capture_exception, capture_message
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,7 @@ async def _send_brevo(email: str, subject: str, html: str, label: str) -> None:
     走 HTTPS，不會碰到 Render 免費方案可能擋 SMTP 連線埠的問題。"""
     if not settings.BREVO_API_KEY or not settings.MAIL_FROM_EMAIL:
         logger.error(f"BREVO_API_KEY 或 MAIL_FROM_EMAIL 尚未設定，無法寄送{label}信件")
+        capture_message(f"Brevo 尚未設定，無法寄送{label}信件", area="email")
         return
 
     payload = {
@@ -40,8 +42,11 @@ async def _send_brevo(email: str, subject: str, html: str, label: str) -> None:
             logger.error(
                 f"🔥 {label}信件寄送失敗 (status={response.status_code}): {response.text}"
             )
+            # 只送狀態碼，不送 Brevo 回應內容（可能帶收件人 Email）
+            capture_message(f"Brevo {label}信件寄送失敗 status={response.status_code}", area="email")
     except Exception as e:
         logger.error(f"🔥 {label}信件寄送失敗: {e}")
+        capture_exception(e, area="email")
 
 
 async def send_magic_link_email(email: str, link: str) -> None:

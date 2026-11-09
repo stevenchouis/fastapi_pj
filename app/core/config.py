@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     # SHORT_ACCESS_TOKEN_MINUTES 分鐘（只影響之後新發的通行證），測完清空即可
     SHORT_ACCESS_TOKEN_USER_IDS: str = ""
     SHORT_ACCESS_TOKEN_MINUTES: int = 1
+    # 2026-11 錯誤監控：Sentry DSN，沒設就不啟用（本機開發、驗證腳本不回報）；
+    # SENTRY_ENVIRONMENT 沒設時，Render 上是 "production"、其他地方是 "local"（見 core/monitoring.py）
+    SENTRY_DSN: str = ""
+    SENTRY_ENVIRONMENT: str = ""
     # 改為可選或提供預設值，避免啟動直接崩潰，或者保持原樣強制要求
     DATABASE_URL: str
     # Google 登入用：驗證 id_token 的 audience 要用這組 Web Client ID
