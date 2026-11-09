@@ -4,26 +4,8 @@ from typing import Optional
 
 from pydantic import BaseModel, field_validator
 
-# 點擊導向的白名單——三方（後端／mynotification／staff-scanner）寫死同一份，
-# 任一邊要加新路由都要三邊同步更新，不是後端單方面能決定的清單
-HERO_BANNER_LINK_ROUTES = frozenset(
-    {
-        "/coupons",
-        "/points",
-        "/favorites",
-        "/inbox",
-        "/member-code",
-        "/shop",
-        "/search",
-        "/settings",
-    }
-)
-
-
-def _validate_link_route(value: Optional[str]) -> Optional[str]:
-    if value is not None and value not in HERO_BANNER_LINK_ROUTES:
-        raise ValueError(f"link_route 必須是 null 或白名單內的路由：{sorted(HERO_BANNER_LINK_ROUTES)}")
-    return value
+# 點擊導向白名單跟開屏彈窗共用，清單在 app/schemas/link_route.py
+from app.schemas.link_route import validate_link_route as _validate_link_route
 
 
 class HeroBannerOut(BaseModel):

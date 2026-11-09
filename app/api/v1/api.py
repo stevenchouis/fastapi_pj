@@ -14,6 +14,7 @@ from app.api.v1.endpoints import (
     menu_items,
     notifications,
     orders,
+    popup_banners,
     products,
     promotions,
     referrals,
@@ -68,6 +69,9 @@ api_router.include_router(friends.router, prefix="/friends", tags=["friends"])
 api_router.include_router(marquee.router, prefix="/marquee", tags=["marquee"])
 api_router.include_router(
     hero_banners.router, prefix="/hero-banners", tags=["hero-banners"]
+)
+api_router.include_router(
+    popup_banners.router, prefix="/popup-banners", tags=["popup-banners"]
 )
 api_router.include_router(check_in.router, prefix="/check-in", tags=["check-in"])
 api_router.include_router(referrals.router, prefix="/referrals", tags=["referrals"])
