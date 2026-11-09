@@ -3,7 +3,7 @@ import logging
 from typing import Optional
 
 from exponent_server_sdk import PushClient, PushMessage
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from .. import models
 
@@ -40,13 +40,43 @@ def _safe_image_url(image_url: Optional[str]) -> Optional[str]:
     return None
 
 
+DEVICE_NOT_REGISTERED = "DeviceNotRegistered"
+
+
+async def _save_push_results(db_factory, tickets: list[tuple[str, str]], dead_tokens: list[str]):
+    """
+    2026-11 清除失效 token：發送完（DB 連線已關閉、網路呼叫結束後）才開一個短連線，
+    存下要等 receipt 的 ticket id，並刪掉 Expo 當場回 DeviceNotRegistered 的 token。
+    失敗只記 log，不影響推播本身（best-effort）。
+    """
+    if not tickets and not dead_tokens:
+        return
+    try:
+        async with db_factory() as db:
+            for ticket_id, token in tickets:
+                db.add(models.PushTicket(ticket_id=ticket_id, token=token))
+            if dead_tokens:
+                await db.execute(
+                    delete(models.PushToken).where(models.PushToken.token.in_(dead_tokens))
+                )
+                logger.info(f"刪除 {len(dead_tokens)} 個 DeviceNotRegistered 的推播 token")
+            await db.commit()
+    except Exception as e:
+        logger.error(f"儲存推播 ticket／刪除失效 token 失敗: {e}")
+
+
 async def _publish_to_tokens(
     token_list: list[str],
     title: str,
     body: str,
     data: Optional[dict] = None,
     image_url: Optional[str] = None,
+    db_factory=None,
 ):
+    """
+    db_factory 有給時，會記錄 ticket（給排程查 receipt）並刪除當場回
+    DeviceNotRegistered 的 token；其他錯誤（MessageTooBig、InvalidCredentials 等）只記 log。
+    """
     if not token_list:
         return
 
@@ -54,6 +84,8 @@ async def _publish_to_tokens(
     message_cls = _RichPushMessage if image_url else PushMessage
     extra = {"image_url": image_url} if image_url else {}
     loop = asyncio.get_event_loop()
+    tickets: list[tuple[str, str]] = []  # (ticket_id, token)
+    dead_tokens: list[str] = []
     for token in token_list:
         msg = message_cls(
             to=token,
@@ -73,10 +105,18 @@ async def _publish_to_tokens(
             response = await loop.run_in_executor(None, push_client.publish, msg)
             if response.status == "ok":
                 logger.info("✅ 推播發送成功")
+                if response.id:
+                    tickets.append((response.id, token))
             else:
-                logger.error(f"❌ Expo 錯誤: {response.message}")
+                error = (response.details or {}).get("error")
+                logger.error(f"❌ Expo 錯誤: {error} {response.message}")
+                if error == DEVICE_NOT_REGISTERED:
+                    dead_tokens.append(token)
         except Exception as e:
             logger.error(f"🔥 發送異常: {e}")
+
+    if db_factory is not None:
+        await _save_push_results(db_factory, tickets, dead_tokens)
 
 
 async def send_user_push_notifications(
@@ -123,7 +163,7 @@ async def send_user_push_notifications(
         return
 
     # 第二步：在資料庫連線關閉後，才執行耗時的網路推播
-    await _publish_to_tokens(token_list, title, body, data, image_url)
+    await _publish_to_tokens(token_list, title, body, data, image_url, db_factory=db_factory)
 
 
 async def send_favorite_users_notifications(
@@ -175,7 +215,7 @@ async def send_favorite_users_notifications(
         logger.info(f"product_id={product_id} 的收藏者在 app_id={app_id} 都沒有可用 Token")
         return
 
-    await _publish_to_tokens(token_list, title, body, data, image_url)
+    await _publish_to_tokens(token_list, title, body, data, image_url, db_factory=db_factory)
 
 
 async def send_role_push_notifications(
@@ -232,4 +272,4 @@ async def send_role_push_notifications(
         logger.info(f"role={role} 的使用者在 app_id={app_id} 都沒有可用 Token")
         return
 
-    await _publish_to_tokens(token_list, title, body, data, image_url)
+    await _publish_to_tokens(token_list, title, body, data, image_url, db_factory=db_factory)

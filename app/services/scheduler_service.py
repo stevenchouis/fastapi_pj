@@ -9,7 +9,7 @@ from sqlalchemy import extract, func, select, update
 from app.core.config import settings
 from app.database_async import AsyncSessionLocal  #
 from app.models import Coupon, LoyaltyTransaction, User  #
-from app.services import loyalty_service
+from app.services import loyalty_service, push_cleanup_service
 from app.services.push_service import send_user_push_notifications
 
 # 2026-10：先前沒有明確指定 timezone，實際觸發時間取決於執行機器的系統時區
@@ -267,6 +267,37 @@ def run_self_ping_bridge():
     loop.close()
 
 
+def run_push_receipt_check_bridge():
+    """橋接 BackgroundScheduler (同步) 與 push_cleanup_service.check_push_receipts_task"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        stats = loop.run_until_complete(
+            push_cleanup_service.check_push_receipts_task(AsyncSessionLocal)
+        )
+        if stats["checked"] or stats["expired"]:
+            print(f"[{datetime.now()}] 推播 receipt 檢查: {stats}")
+    except Exception as e:
+        print(f"[{datetime.now()}] 推播 receipt 檢查失敗: {e}")
+    finally:
+        loop.close()
+
+
+def run_stale_push_token_cleanup_bridge():
+    """橋接 BackgroundScheduler (同步) 與 push_cleanup_service.delete_stale_push_tokens_task"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        count = loop.run_until_complete(
+            push_cleanup_service.delete_stale_push_tokens_task(AsyncSessionLocal)
+        )
+        print(f"[{datetime.now()}] 刪除 90 天沒出現的推播 token: {count} 筆")
+    except Exception as e:
+        print(f"[{datetime.now()}] 刪除過期推播 token 失敗: {e}")
+    finally:
+        loop.close()
+
+
 # 初始化排程器；明確指定 timezone=Asia/Taipei（見上方 SCHEDULER_TIMEZONE 說明），
 # 讓所有 cron 的 hour/day 不論部署在哪個平台都固定對應台灣當地時間
 scheduler = BackgroundScheduler(timezone=SCHEDULER_TIMEZONE)
@@ -291,10 +322,19 @@ def start_scheduler():
     # 也不會太早吵到使用者手機（這是真的會推播的通知，跟上面的靜默收回不同）
     scheduler.add_job(run_points_expiry_reminder_bridge, "cron", hour=10, minute=0)
 
+    # 6. 推播 receipt 檢查（2026-11 清除失效 token）：每 15 分鐘查一次發送滿 15 分鐘的
+    # ticket。Render 沒有常駐 worker，但上面的保活任務讓服務一直醒著，排程會照常觸發；
+    # 就算服務重啟，ticket 存在 DB，下次觸發會接著查（24 小時內都查得到）
+    scheduler.add_job(run_push_receipt_check_bridge, "interval", minutes=15)
+
+    # 7. 刪除 90 天沒出現的推播 token：每天台灣當地時間凌晨 3 點
+    scheduler.add_job(run_stale_push_token_cleanup_bridge, "cron", hour=3, minute=0)
+
     # 啟動排程器
     scheduler.start()
     print(
         "APScheduler 已啟動（timezone=Asia/Taipei）：正式任務 (每月25日 00:00)、"
         "保活任務 (每14分鐘)、點數到期排程 (每日01:00)、"
-        "點數到期提醒排程 (每日10:00) 運行中..."
+        "點數到期提醒排程 (每日10:00)、推播 receipt 檢查 (每15分鐘)、"
+        "過期推播 token 清除 (每日03:00) 運行中..."
     )

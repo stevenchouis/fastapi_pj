@@ -2,7 +2,7 @@ from .google_auth import GoogleLoginRequest
 from .line_auth import LineLoginRequest
 from .magic_link import MagicLinkRequest, MagicLinkVerify
 from .notification import NotificationLog, NotificationLogBase  # 新增的通知 Schema
-from .push_token import PushToken, PushTokenCreate
+from .push_token import PushToken, PushTokenCreate, PushTokenUnregister
 from .token import RefreshTokenRequest, Token, TokenData
 
 # from .user import User, UserCreate, UserUpdate  # 確保 User 有被導出
@@ -16,6 +16,7 @@ __all__ = [
     "RefreshTokenRequest",
     "PushToken",
     "PushTokenCreate",
+    "PushTokenUnregister",
     "NotificationLog",
     "NotificationLogBase",
     "User",

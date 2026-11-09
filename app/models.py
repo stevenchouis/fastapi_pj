@@ -126,8 +126,30 @@ class PushToken(Base):
     # 「推播通知」一節的 rollout 計畫，等兩邊 App 都改送這個欄位後才會開始篩選）
     app_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # 2026-11 清除失效 token：App 每次打開都會打 POST /users/push-tokens，這裡記錄最後
+    # 一次出現的時間；超過 90 天沒出現的由每日排程刪除（見 push_cleanup_service）。
+    # 既有資料在 migration 時填成上線當下，等於給舊 token 90 天緩衝
+    last_seen_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
 
     user = relationship("User", back_populates="push_tokens")
+
+
+class PushTicket(Base):
+    """
+    2026-11 清除失效 token：Expo 發送成功會回一個 ticket id，約 15 分鐘後才能用
+    getReceipts 查到真正的送達結果（receipt）。這裡暫存 ticket id 與當時的 token 字串
+    （不是 FK：token 可能已被刪除或換人），由排程查完 receipt 後刪除；超過 24 小時
+    （Expo 只保留 receipt 一天）還沒查到的也直接刪除。
+    """
+
+    __tablename__ = "push_tickets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(String, unique=True, nullable=False)
+    token = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class NotificationLog(Base):

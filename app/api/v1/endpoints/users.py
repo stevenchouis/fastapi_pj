@@ -2,7 +2,7 @@ import logging
 import secrets
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,6 +81,30 @@ async def update_user_me(
         await db.rollback()  # <--- 修正處：加上 await
         print(f"DEBUG: 更新失敗，原因: {e}")
         raise HTTPException(status_code=500, detail="Database Update Failed")
+
+
+@router.post("/push-tokens/unregister", status_code=status.HTTP_204_NO_CONTENT)
+async def unregister_push_token(
+    payload: schemas.PushTokenUnregister,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    2026-11 登出時解除這支手機的推播（兩個 App 都會呼叫）。只刪屬於目前使用者的
+    那一筆；找不到（已被刪、已換人登入）也回 204。要在登出、通行證還有效時呼叫。
+    """
+    try:
+        await db.execute(
+            delete(models.PushToken).where(
+                models.PushToken.token == payload.token,
+                models.PushToken.user_id == current_user.id,
+            )
+        )
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"解除推播 token 失敗: {e}")
+        raise HTTPException(status_code=500, detail="解除推播失敗")
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
@@ -270,6 +294,8 @@ async def update_user_push_token(
             existing_record.user_id = current_user.id
             existing_record.device_name = payload.device_name
             existing_record.app_id = payload.app_id
+            # 2026-11 清除失效 token：記錄最後出現時間，超過 90 天沒出現的由排程刪除
+            existing_record.last_seen_at = func.now()
             # 在某些 SQLAlchemy 配置中，修改屬性後建議執行 add 以確保追蹤
             db.add(existing_record)
             logger.info(
@@ -282,6 +308,7 @@ async def update_user_push_token(
                 device_name=payload.device_name,
                 app_id=payload.app_id,
                 user_id=current_user.id,
+                last_seen_at=func.now(),
             )
             db.add(new_token)
             logger.info(

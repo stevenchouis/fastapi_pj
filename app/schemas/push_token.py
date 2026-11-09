@@ -13,6 +13,12 @@ class PushTokenCreate(BaseModel):
     app_id: Optional[str] = None
 
 
+class PushTokenUnregister(BaseModel):
+    """POST /users/push-tokens/unregister 的 body（登出時解除這支手機的推播）"""
+
+    token: str
+
+
 # API 回傳時的格式 (如果需要回傳列表)
 class PushToken(BaseModel):
     id: int
