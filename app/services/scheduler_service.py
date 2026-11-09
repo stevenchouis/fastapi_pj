@@ -7,7 +7,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import extract, func, select, update
 
 from app.core.config import settings
-from app.database_async import AsyncSessionLocal, SchedulerSessionLocal  #
+from app.database_async import SchedulerSessionLocal  # 排程一律用 NullPool 工廠，見 database_async 說明
 from app.models import Coupon, LoyaltyTransaction, User  #
 from app.services import loyalty_service, push_cleanup_service
 from app.services.push_service import send_user_push_notifications
@@ -32,7 +32,7 @@ async def send_birthday_coupons_async_task():
     # （撈資料/寫DB → 關閉交易 → 再發推播，避免推播卡住交易）
     issued: list[tuple[int, int, int]] = []  # (user_id, coupon_id, amount)
 
-    async with AsyncSessionLocal() as db:
+    async with SchedulerSessionLocal() as db:
         try:
             today = date.today()
             # 計算下個月月份與年份
@@ -99,7 +99,7 @@ async def send_birthday_coupons_async_task():
     for user_id, coupon_id, amount in issued:
         try:
             await send_user_push_notifications(
-                AsyncSessionLocal,
+                SchedulerSessionLocal,
                 user_id,
                 "mynotification",
                 "🎂 生日禮物已送達！",
@@ -142,7 +142,7 @@ async def expire_loyalty_points_task():
     now = datetime.now(UTC)
     expired_count = 0
 
-    async with AsyncSessionLocal() as db:
+    async with SchedulerSessionLocal() as db:
         try:
             # earn 跟 2026-11 每日簽到的 check_in 都會過期（loyalty_service.POINT_LOT_TYPES）
             query = select(LoyaltyTransaction).where(
@@ -205,7 +205,7 @@ async def send_points_expiry_reminder_task():
     reminded_count = 0
     notified_users = 0
 
-    async with AsyncSessionLocal() as db:
+    async with SchedulerSessionLocal() as db:
         try:
             # earn 跟 2026-11 每日簽到的 check_in 都要提醒（loyalty_service.POINT_LOT_TYPES）
             query = select(LoyaltyTransaction).where(
@@ -234,7 +234,7 @@ async def send_points_expiry_reminder_task():
     for user_id, total_amount in by_user.items():
         try:
             await send_user_push_notifications(
-                AsyncSessionLocal,
+                SchedulerSessionLocal,
                 user_id,
                 "mynotification",
                 "⏰ 點數即將到期",
