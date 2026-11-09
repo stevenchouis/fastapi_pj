@@ -7,7 +7,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import extract, func, select, update
 
 from app.core.config import settings
-from app.database_async import AsyncSessionLocal  #
+from app.database_async import AsyncSessionLocal, SchedulerSessionLocal  #
 from app.models import Coupon, LoyaltyTransaction, User  #
 from app.services import loyalty_service, push_cleanup_service
 from app.services.push_service import send_user_push_notifications
@@ -273,7 +273,7 @@ def run_push_receipt_check_bridge():
     asyncio.set_event_loop(loop)
     try:
         stats = loop.run_until_complete(
-            push_cleanup_service.check_push_receipts_task(AsyncSessionLocal)
+            push_cleanup_service.check_push_receipts_task(SchedulerSessionLocal)
         )
         if stats["checked"] or stats["expired"]:
             print(f"[{datetime.now()}] 推播 receipt 檢查: {stats}")
@@ -289,7 +289,7 @@ def run_stale_push_token_cleanup_bridge():
     asyncio.set_event_loop(loop)
     try:
         count = loop.run_until_complete(
-            push_cleanup_service.delete_stale_push_tokens_task(AsyncSessionLocal)
+            push_cleanup_service.delete_stale_push_tokens_task(SchedulerSessionLocal)
         )
         print(f"[{datetime.now()}] 刪除 90 天沒出現的推播 token: {count} 筆")
     except Exception as e:

@@ -66,6 +66,8 @@ alembic upgrade head
   - 成功的 ticket 存進新表 `PushTicket`，排程每 15 分鐘查滿 15 分鐘的 receipt（`app/services/push_cleanup_service.py`），`DeviceNotRegistered` 就刪，超過 24 小時的 ticket 丟掉。
   - `PushToken.last_seen_at`（migration `877197b3840b`，`POST /users/push-tokens` 每次更新）超過 90 天的 token 由每日 03:00 排程刪除。
 
+  **排程的坑：** APScheduler bridge 在新的 event loop 裡用共用連線池（`AsyncSessionLocal`）會拿到主 loop 的連線，報「attached to a different loop」。第一版上線後 receipt 檢查就是這樣一直失敗，已改用 `database_async.SchedulerSessionLocal`（`NullPool`）。既有的生日禮券／點數到期／到期提醒排程仍用 `AsyncSessionLocal`，有同樣風險，待使用者決定是否一起改。
+
   其他錯誤只記 log 不刪。另新增 `POST /users/push-tokens/unregister`（需登入，body `{token}`，只刪自己的，一律 204），給兩個 App 登出時解除推播用。upsert 仍以 `token` 為鍵（`device_name` 不夠精準，這點維持不變）。
 - **`PushMessage.channel_id`（2026-09-10，已修）：** `_publish_to_tokens` 原本建立 `PushMessage` 時沒有帶 `channel_id`，導致 Android 端收到的推播全部被系統歸類到預設的「Miscellaneous」分類——這個分類不支援橫幅（heads-up）顯示，即使前端（`app/_layout.tsx`）已經用 `setNotificationChannelAsync('default', ...)` 正確建立了支援橫幅的 channel 也沒用，因為後端送出的 payload 裡根本沒有 `channelId` 讓 Android 對應過去。修法是 `PushMessage(..., channel_id="default")`，需要跟前端建立的 channel 名稱完全一致（目前是 `"default"`）。
 

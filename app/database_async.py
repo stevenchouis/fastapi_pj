@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.pool import NullPool
 
 # 1. 改用 asyncpg 協定，Port 依然建議用 6543 (Pooler)
 # SQLALCHEMY_DATABASE_URL = "postgresql+asyncpg://postgres.cvotzsjolzsvevoefucb:VW7spP9X7I3t4Vqp@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres?prepared_statement_cache_size=0&statement_cache_size=0"
@@ -21,6 +22,19 @@ engine = create_async_engine(
 # 3. 建立非同步 Session 工廠
 AsyncSessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, autocommit=False, autoflush=False
+)
+
+# 3b. 排程專用的 Session 工廠（2026-11）：APScheduler 的 bridge 每次在別的執行緒開一個
+# 新的 event loop，如果從上面的連線池拿到 uvicorn 主 loop 建立的連線，asyncpg 會報
+# 「Future attached to a different loop」而失敗。這裡用 NullPool：不保留連線，每次都在
+# 當下的 loop 開新連線、用完就關，跨 loop 也不會出錯。
+scheduler_engine = create_async_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"prepared_statement_cache_size": 0, "statement_cache_size": 0},
+    poolclass=NullPool,
+)
+SchedulerSessionLocal = async_sessionmaker(
+    bind=scheduler_engine, class_=AsyncSession, autocommit=False, autoflush=False
 )
 
 Base = declarative_base()

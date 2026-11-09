@@ -20,6 +20,7 @@
 - 回應裡有的 ticket 處理完就刪掉，不論成功或失敗。回應裡沒有的代表 receipt 還沒好，留到下次再查。
 - 超過 24 小時還沒查到的 ticket 直接刪除。
 - 整批查詢失敗（Expo 掛掉、網路問題）只記 log，ticket 留著下次再查。
+- **排程用 `SchedulerSessionLocal`，不是 `AsyncSessionLocal`（2026-11-09 上線後修正）**：APScheduler 的 bridge 每次在別的執行緒開新的 event loop。如果從共用連線池拿到 uvicorn 主 loop 建立的連線，asyncpg 會報「Future attached to a different loop」，第一版上線後 receipt 檢查因此一直失敗。`app/database_async.py` 新增用 `NullPool` 的 `scheduler_engine`／`SchedulerSessionLocal`，每次都在當下的 loop 開新連線、用完就關。
 - 網路呼叫時不佔用 DB 連線，跟 `send_user_push_notifications` 同一個原則：先撈資料、關掉連線，再呼叫 Expo。
 
 ## `PushToken.last_seen_at`
