@@ -63,6 +63,9 @@ class User(Base):
     # 2026-11 推薦好友：固定 6 碼推薦碼（大寫英數、去掉 0/O/1/I），第一次查詢
     # GET /referrals/me 時才產生（referral_service.ensure_referral_code），刪帳號時清空
     referral_code = Column(String(6), unique=True, index=True, nullable=True)
+    # 2026-11 電子發票載具（財政部手機條碼，「/」+7 碼）：只檢查格式、不向財政部驗證，
+    # 格式規則見 app/services/einvoice_service.py；建立訂單時快照到訂單上，刪帳號時清空
+    einvoice_carrier = Column(String(8), nullable=True)
 
     # 建立與 PushToken 的關聯
     push_tokens = relationship(
@@ -290,6 +293,9 @@ class Order(Base):
     merchant_trade_no = Column(String, unique=True, index=True, nullable=False)
     # 金流那邊的交易編號（ECPay 回調的 TradeNo），付款成功前為 None
     payment_reference = Column(String, nullable=True)
+    # 2026-11 電子發票載具快照：建立訂單當下複製會員的 User.einvoice_carrier，之後會員改載具
+    # 不影響這筆訂單；目前只記錄、還沒真正開發票
+    einvoice_carrier = Column(String(8), nullable=True)
     # 這筆訂單折抵用掉的點數／折抵金額，0 代表沒有使用點數；
     # total_amount 已經是扣除折抵後、實際要付款的金額
     points_used = Column(Integer, nullable=False, server_default="0")
@@ -385,6 +391,8 @@ class DineInOrder(Base):
     # 只是現在強制要求先經過 served 才能轉 completed（PATCH 端點裡做狀態機檢查）
     status = Column(String, nullable=False, default="pending")
     total_amount = Column(Numeric(10, 2), nullable=False)
+    # 2026-11 電子發票載具快照，做法比照 Order.einvoice_carrier
+    einvoice_carrier = Column(String(8), nullable=True)
     # 這筆訂單折抵用掉的點數／折抵金額，做法比照 Order（0 代表沒有使用點數）
     points_used = Column(Integer, nullable=False, server_default="0")
     points_discount = Column(Numeric(10, 2), nullable=False, server_default="0")
@@ -555,6 +563,8 @@ class StoreCheckout(Base):
     points_discount = Column(Numeric(10, 2), nullable=False, server_default="0")
     # 折抵後實付金額，付款當下就是最終值（沒有中繼付款狀態）
     total_amount = Column(Numeric(10, 2), nullable=False)
+    # 2026-11 電子發票載具快照（會員的，不是店員的），做法比照 Order.einvoice_carrier
+    einvoice_carrier = Column(String(8), nullable=True)
     # 先固定 "completed"，多留這個欄位是為了之後如果要做「店員打錯金額作廢」
     # 這類需求時不用再 migration，目前沒有任何程式碼會寫入其他值
     status = Column(String, nullable=False, server_default="completed")

@@ -84,6 +84,7 @@ def _to_order_out(order: DineInOrder, points_earned: int = 0) -> DineInOrderOut:
         points_used=order.points_used,
         points_discount=float(order.points_discount),
         points_earned=points_earned,
+        einvoice_carrier=order.einvoice_carrier,
         payment_method=order.payment_method,
         created_at=order.created_at,
         pickup_number=order.pickup_number,
@@ -230,6 +231,8 @@ async def create_dine_in_order(
             points_discount=points_discount,
             pickup_number=pickup_number,
             pickup_date=business_date,
+            # 2026-11 電子發票載具快照（前端不傳），做法比照 POST /orders
+            einvoice_carrier=current_user.einvoice_carrier,
         )
         order.items = order_items
         db.add(order)

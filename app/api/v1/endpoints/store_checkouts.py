@@ -53,6 +53,7 @@ def _to_store_checkout_out(checkout: StoreCheckout, points_earned: int = 0) -> S
         points_discount=float(checkout.points_discount),
         total_amount=float(checkout.total_amount),
         points_earned=points_earned,
+        einvoice_carrier=checkout.einvoice_carrier,
         status=checkout.status,
         created_at=checkout.created_at,
     )
@@ -110,6 +111,7 @@ async def lookup_member_code(
         loyalty_balance=user.loyalty_balance,
         coupons=coupons,
         tier=await loyalty_service.get_tier_for_user(db, user.id),
+        einvoice_carrier=user.einvoice_carrier,
     )
 
 
@@ -149,14 +151,15 @@ async def create_store_checkout(
             .where(User.member_code_hash == code_hash)
             .where(User.member_code_expires_at > now)
             .values(member_code_hash=None, member_code_expires_at=None)
-            .returning(User.id)
+            # 2026-11 電子發票載具：一併取回會員的載具做快照（是會員的，不是店員的）
+            .returning(User.id, User.einvoice_carrier)
         )
         result = await db.execute(statement)
         row = result.first()
         if row is None:
             await db.rollback()
             raise HTTPException(status_code=404, detail="會員碼無效或已過期")
-        (member_user_id,) = row
+        member_user_id, member_carrier = row
 
         subtotal = Decimal(payload.subtotal)
 
@@ -218,6 +221,7 @@ async def create_store_checkout(
             points_used=points_used,
             points_discount=points_discount,
             total_amount=total_amount,
+            einvoice_carrier=member_carrier,
         )
         db.add(checkout)
         # 先 flush 拿到 id（此時屬性還沒過期），commit 後 session 預設會

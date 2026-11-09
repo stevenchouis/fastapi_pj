@@ -53,6 +53,7 @@ class OrderOut(BaseModel):
     points_used: int = 0
     points_discount: float = 0
     points_earned: int = 0
+    einvoice_carrier: Optional[str] = None  # 2026-11 下單當下的電子發票載具快照
     payment_provider: str
     merchant_trade_no: str
     created_at: datetime

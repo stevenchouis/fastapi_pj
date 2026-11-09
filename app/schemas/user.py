@@ -23,6 +23,10 @@ class UserUpdate(BaseModel):
     # None＝這次沒帶（不改）；trim 後空字串／純空白＝清除暱稱（存 null）；
     # 超過 20 字回 422。不要求唯一
     nickname: str | None = None
+    # 2026-11 電子發票載具：沒帶這個欄位＝不動（用 model_fields_set 判斷）；null／空字串＝清除；
+    # 字串 → normalize 後檢查格式，不合格回 400 invalid_einvoice_carrier（在 endpoint 檢查，
+    # 不在這裡丟 ValueError，因為契約是 400 + error_code，不是 422）
+    einvoice_carrier: str | None = None
 
     @field_validator("nickname")
     @classmethod
@@ -46,6 +50,7 @@ class User(UserBase):
     # 2026-09 多門市支援：僅 role="staff" 有意義，店員 App 登入後用這個知道
     # 自己屬於哪間門市（畫面唯讀顯示，不需要門市選擇器）
     restaurant_id: int | None = None
+    einvoice_carrier: str | None = None  # 2026-11 電子發票載具（手機條碼）
 
     class Config:
         from_attributes = True  # 允許 Pydantic 讀取 SQLAlchemy 模型

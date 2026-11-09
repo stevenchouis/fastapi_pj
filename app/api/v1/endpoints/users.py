@@ -2,7 +2,7 @@ import logging
 import secrets
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,7 +15,7 @@ from app.api.deps import get_current_user
 from app.core.security import pwd_context  # 引用你現有的物件
 from app.database_async import AsyncSessionLocal, get_db
 from app.schemas.user import User, UserUpdate  # 確保匯入新 Schema
-from app.services import referral_service
+from app.services import einvoice_service, referral_service
 from app.services.coupon_service import build_coupon
 from app.services.push_service import send_user_push_notifications
 
@@ -56,6 +56,19 @@ async def update_user_me(
     # 空字串（trim 後）代表清除暱稱；None 代表這次沒帶，不動
     if obj_in.nickname is not None:
         current_user.nickname = obj_in.nickname or None
+
+    # 2026-11 電子發票載具：沒帶這個欄位不動；null／空字串（去空白後）清除；其他要符合手機條碼格式
+    if "einvoice_carrier" in obj_in.model_fields_set:
+        carrier = einvoice_service.normalize_carrier(obj_in.einvoice_carrier or "")
+        if carrier and not einvoice_service.is_valid_carrier(carrier):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "invalid_einvoice_carrier",
+                    "message": "手機條碼格式錯誤，應為「/」加 7 碼英數字或 .+-",
+                },
+            )
+        current_user.einvoice_carrier = carrier or None
 
     # 執行儲存 (必須加上 await)
     try:
@@ -132,11 +145,21 @@ async def delete_user_me(
         )
         if old_email:
             await db.execute(delete(models.MagicLinkToken).where(models.MagicLinkToken.email == old_email))
+        # 2026-11 電子發票載具：訂單本身保留，但訂單上的載具快照清空——手機條碼在財政部
+        # 對應到真實手機號碼，留著等於能把已匿名化的帳號連回本人；而且這期還沒真正
+        # 開發票，快照沒有用途。之後串接開發票時，已開立發票的載具由發票紀錄保存，要重新評估
+        for order_model in (models.Order, models.DineInOrder, models.StoreCheckout):
+            await db.execute(
+                update(order_model)
+                .where(order_model.user_id == user_id, order_model.einvoice_carrier.isnot(None))
+                .values(einvoice_carrier=None)
+            )
 
         current_user.email = f"deleted-{user_id}@deleted.invalid"
         current_user.hashed_password = pwd_context.hash(secrets.token_urlsafe(32))
         current_user.nickname = None
         current_user.referral_code = None
+        current_user.einvoice_carrier = None
         current_user.birthday = None
         current_user.avatar_url = None
         current_user.google_id = None

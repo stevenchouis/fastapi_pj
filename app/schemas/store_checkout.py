@@ -24,6 +24,7 @@ class MemberCodeLookupOut(BaseModel):
     coupons: List[CouponOut]
     # 2026-11 會員等級，讓店員看得到是不是金卡客人（純顯示用）
     tier: Literal["regular", "silver", "gold"] = "regular"
+    einvoice_carrier: Optional[str] = None  # 2026-11 會員目前的電子發票載具，給店員 App 顯示
 
 
 class StoreCheckoutCreate(BaseModel):
@@ -49,6 +50,7 @@ class StoreCheckoutOut(BaseModel):
     points_discount: float = 0
     total_amount: float
     points_earned: int = 0
+    einvoice_carrier: Optional[str] = None  # 2026-11 下單當下的電子發票載具快照
     status: str
     created_at: datetime
 

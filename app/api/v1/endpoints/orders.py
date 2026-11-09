@@ -60,6 +60,7 @@ def _to_order_out(order: Order, points_earned: int = 0) -> OrderOut:
         points_used=order.points_used,
         points_discount=float(order.points_discount),
         points_earned=points_earned,
+        einvoice_carrier=order.einvoice_carrier,
         payment_provider=order.payment_provider,
         merchant_trade_no=order.merchant_trade_no,
         created_at=order.created_at,
@@ -209,6 +210,8 @@ async def create_order(
             points_discount=points_discount,
             payment_provider="ecpay",
             merchant_trade_no=_generate_merchant_trade_no(),
+            # 2026-11 電子發票載具：快照會員當下的載具（前端不傳），之後改載具不影響這筆訂單
+            einvoice_carrier=current_user.einvoice_carrier,
         )
         order.items = order_items
         db.add(order)
