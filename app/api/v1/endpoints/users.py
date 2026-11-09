@@ -15,7 +15,7 @@ from app.api.deps import get_current_user
 from app.core.security import pwd_context  # 引用你現有的物件
 from app.database_async import AsyncSessionLocal, get_db
 from app.schemas.user import User, UserUpdate  # 確保匯入新 Schema
-from app.services import einvoice_service, referral_service
+from app.services import account_service, einvoice_service, referral_service
 from app.services.coupon_service import build_coupon
 from app.services.push_service import send_user_push_notifications
 
@@ -138,63 +138,8 @@ async def delete_user_me(
     if current_user.role == "staff":
         raise HTTPException(status_code=403, detail="店員帳號請由管理者處理")
 
-    user_id = current_user.id
-    old_email = current_user.email
-
     try:
-        await db.execute(delete(models.PushToken).where(models.PushToken.user_id == user_id))
-        # 2026-11 登入自動續期：續期證全部刪除，刪帳號後不能再換證
-        await db.execute(delete(models.RefreshToken).where(models.RefreshToken.user_id == user_id))
-        await db.execute(delete(models.NotificationLog).where(models.NotificationLog.user_id == user_id))
-        await db.execute(delete(models.Favorite).where(models.Favorite.user_id == user_id))
-        await db.execute(
-            delete(models.Friendship).where(
-                or_(models.Friendship.user_a_id == user_id, models.Friendship.user_b_id == user_id)
-            )
-        )
-        # 只刪未使用的優惠券/核銷碼；已核銷的維持不動（跟 Order 一樣算交易紀錄）
-        await db.execute(
-            delete(models.Coupon).where(
-                models.Coupon.user_id == user_id, models.Coupon.is_used.is_(False)
-            )
-        )
-        await db.execute(
-            delete(models.LoyaltyTransaction).where(models.LoyaltyTransaction.user_id == user_id)
-        )
-        # 2026-11 每日簽到紀錄：純會員活動紀錄，跟點數明細一樣不需保留
-        await db.execute(delete(models.DailyCheckIn).where(models.DailyCheckIn.user_id == user_id))
-        # 2026-11 推薦好友：被刪那方（推薦人或被推薦人）的推薦紀錄一併刪除；推薦碼在下面清空
-        await db.execute(
-            delete(models.Referral).where(
-                or_(models.Referral.referrer_id == user_id, models.Referral.referee_id == user_id)
-            )
-        )
-        if old_email:
-            await db.execute(delete(models.MagicLinkToken).where(models.MagicLinkToken.email == old_email))
-        # 2026-11 電子發票載具：訂單本身保留，但訂單上的載具快照清空——手機條碼在財政部
-        # 對應到真實手機號碼，留著等於能把已匿名化的帳號連回本人；而且這期還沒真正
-        # 開發票，快照沒有用途。之後串接開發票時，已開立發票的載具由發票紀錄保存，要重新評估
-        for order_model in (models.Order, models.DineInOrder, models.StoreCheckout):
-            await db.execute(
-                update(order_model)
-                .where(order_model.user_id == user_id, order_model.einvoice_carrier.isnot(None))
-                .values(einvoice_carrier=None)
-            )
-
-        current_user.email = f"deleted-{user_id}@deleted.invalid"
-        current_user.hashed_password = pwd_context.hash(secrets.token_urlsafe(32))
-        current_user.nickname = None
-        current_user.referral_code = None
-        current_user.einvoice_carrier = None
-        current_user.birthday = None
-        current_user.avatar_url = None
-        current_user.google_id = None
-        current_user.line_id = None
-        current_user.member_code_hash = None
-        current_user.member_code_expires_at = None
-        current_user.loyalty_balance = 0
-        current_user.is_active = False
-
+        await account_service.delete_user_account(db, current_user)
         await db.commit()
     except Exception as e:
         await db.rollback()

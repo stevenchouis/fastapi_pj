@@ -8,6 +8,7 @@ from app.api.v1.endpoints import (
     friends,
     hero_banners,
     items,
+    account_deletion,
     login,
     loyalty,
     marquee,
@@ -75,3 +76,6 @@ api_router.include_router(
 )
 api_router.include_router(check_in.router, prefix="/check-in", tags=["check-in"])
 api_router.include_router(referrals.router, prefix="/referrals", tags=["referrals"])
+api_router.include_router(
+    account_deletion.router, prefix="/account-deletion", tags=["account-deletion"]
+)

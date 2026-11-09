@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.api import api_router  # 匯入剛才封裝好的總路由
+from app.api.v1.endpoints import account_deletion
 from app.core.config import settings
 from app.services.scheduler_service import scheduler, start_scheduler
 
@@ -53,6 +54,8 @@ app.add_middleware(
 # 2. 掛載 API 路由
 # 最終路徑會變成: /api/v1/login/access-token, /api/v1/users/push-tokens 等
 app.include_router(api_router, prefix=settings.API_V1_STR)
+# 2026-11 網頁刪除帳號申請頁（給人看的 HTML，掛在根路徑 /account-deletion，見 docs/account-deletion-web.md）
+app.include_router(account_deletion.page_router, tags=["account-deletion-pages"])
 
 # 使用Dict來存放USER資料庫, user是testuser,
 # 明文password是123456, 字典中放的Password則已加密, 此處用於Debug可取到Hashed Password的值, 才能到DB中建立 User資料

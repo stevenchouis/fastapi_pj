@@ -736,3 +736,20 @@ class RefreshToken(Base):
     rotated_at = Column(DateTime(timezone=True), nullable=True)
     revoked_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AccountDeletionToken(Base):
+    """
+    2026-11 網頁刪除帳號申請（Google Play 資料安全性表單要求「不安裝 App 也能申請刪除」）。
+    比照 MagicLinkToken：只存 token 雜湊，30 分鐘有效、單次使用。只有 Email 對應到啟用中
+    的帳號才會建立（所以也拿來算同一 Email 每分鐘 1 次／每天 5 次的頻率限制）。
+    """
+
+    __tablename__ = "account_deletion_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, index=True, nullable=False)
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
