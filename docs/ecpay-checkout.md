@@ -120,12 +120,77 @@ ECPay 對同一筆交易的 Server-to-Server 通知可能重送（例如我方�
 
 ECPay 標準信用卡付款不支援小數金額，只能傳整數元。目前商品價格是 `Numeric(10,2)`（例如 DummyJSON 匯入資料常見 `19.99`），下單當下算出的 `total_amount` 可能帶小數，送給 ECPay 前用 `round()` 轉整數元。這代表使用者實際刷卡金額跟 `Order.total_amount`（資料庫存的權威金額）可能有 1 元以內的無條件捨去/進位差異——目前先用這個簡單做法上線，如果之後要嚴謹處理（例如要求商品價格本身就是整數元、或改成把差額也記錄下來），需要另外跟業務確認規則。
 
+## 付款失敗與逾時（2026-11-12）
+
+由 mynotification 提出，使用者 2026-11-12 定案。補了三個缺口，不含退款功能（之後另開）。
+
+### 共用退回函式
+
+`app/services/order_service.py`：
+
+- `release_order_holds(db, order, reason)`：把建立訂單時先佔用的三樣東西退回：商品庫存加回、優惠券 `coupon_service.release_coupon`、折抵點數 `loyalty_service.reverse_redeem_points`（寫一筆 `reverse_redeem` 明細，原因用 `reason`）。不 commit。
+- `lock_order(db, order_id)`：`SELECT ... FOR UPDATE` 鎖住訂單列並載入 items。
+
+三個呼叫點都是「先鎖列 → 確認還是 `pending` → 退回 → 改狀態 → commit」，誰先拿到鎖誰處理，另一邊看到狀態已變就不動，所以不會退兩次：
+
+| 呼叫點 | 改成的狀態 |
+|---|---|
+| `POST /orders/{id}/cancel`（使用者取消，原本的邏輯搬過來，順便加上鎖） | `cancelled` |
+| `POST /orders/ecpay/callback` 收到 `RtnCode≠1` | `failed` |
+| 逾時取消排程 | `cancelled` |
+
+### 一、付款失敗自動退回
+
+callback 收到 `RtnCode≠1`，在同一個 transaction 裡改成 `failed` 並退回。
+
+- 冪等：訂單已經不是 `pending` 就直接回 `1|OK`，同一筆失敗通知重送不會退兩次。
+- 失敗或取消之後才收到付款成功：維持原狀態、不發點，印 WARNING、送 Sentry（warning），回 `1|OK`。原本只處理 `cancelled`，現在 `failed` 也一樣，否則已退回佔用的訂單會被改成 `paid`。
+
+### 二、待付款 30 分鐘自動取消
+
+`order_service.cancel_expired_pending_orders`，由 `scheduler_service.run_cancel_expired_orders_bridge` 每 5 分鐘執行一次，實際取消時間落在建立後 30～35 分鐘。
+
+- 每筆訂單各自一個 transaction：先鎖列、確認仍是 `pending`，callback 可能剛好搶先一步。單筆失敗不影響其他筆，失敗的送 Sentry（帶 `order_id` tag）。
+- 只會處理信用卡（`ChoosePayment=Credit`）。沒有 ATM／超商代碼那種要等好幾天的付款方式，30 分鐘不會誤殺正常付款。
+- 30 分鐘後才付款成功：callback 看到 `cancelled`，照上面的規則處理（WARNING＋Sentry，需人工核對退款）。
+- **上線當下**：正式 DB 有 9 筆 2026-09 留下的待付款舊訂單（user 1、17、18），部署後第一次排程會把它們取消，退回 17 件庫存、2 張優惠券、28 點。
+
+### 三、callback 的兩個檢查
+
+- `SimulatePaid == "1"`（綠界後台模擬付款）：不改狀態、不發點，印 WARNING，回 `1|OK`。在找訂單之前就先檢查。
+- `RtnCode=1` 時比對 `TradeAmt` 與 `ecpay_service.expected_trade_amount(order)`。這個函式跟送出付款表單的 `TotalAmount` 共用，捨入規則一致。不一致：不改狀態，印 WARNING、送 Sentry（error），回 `0|AmountMismatch` 讓綠界重送、留痕跡。
+
+狀態值沒有新增，還是 `pending`／`paid`／`failed`／`cancelled`／`shipped`。
+
+### 驗證（2026-11-12）
+
+驗證腳本打真實端點、連正式 DB，用測試 `HashKey`／`HashIV` 自己組合法通知，外層交易最後 rollback，事後確認沒有殘留，正式的待付款訂單仍是 9 筆。
+
+- 付款失敗：
+  - 訂單變 `failed`，庫存加回、券改回未使用、點數退回，有一筆 `reverse_redeem`
+  - 同一筆失敗通知重送不會再退
+  - 失敗後才收到成功：維持 `failed`、不發點
+- `SimulatePaid=1`：維持 `pending`、不發點
+- 金額差 1 元：`0|AmountMismatch`、維持 `pending`
+- 正確金額：變 `paid`、有發消費回饋點數，重送不重複發點，庫存和券不退
+- 逾時取消：
+  - 31 分鐘前的訂單被取消並退回，29 分鐘前的不動
+  - 再跑一次不會重複退
+  - 取消後才收到付款成功：維持 `cancelled`、不發點
+  - 這次排程也一併處理到正式 DB 那 9 筆舊訂單（找到 10 筆、取消 10 筆、沒有錯誤，最後 rollback），等於預演了上線後第一次執行
+- 使用者取消：成功並退回；重複取消 409；別人的訂單 404 且不受影響
+- 回歸：會員等級、推薦好友（都會走付款成功的 callback）、Sentry 的驗證腳本都通過
+
+**沒有驗證到**：
+- 真實 ECPay 送來的失敗通知
+- 兩個請求同時搶同一筆訂單的鎖（單一連線的驗證腳本測不出真正的並行）
+
 ## 已知限制／待辦
 
 - **已修正兩個真實 bug（MD5→SHA256、`request.form()` 中文解碼），但尚未跑完一次「首次通知即成功」的付款**：2026-09-14 前端連續兩輪實機測試分別撞到：(1) `EncryptType=1` 誤用 MD5（應為 SHA256），(2) `request.form()` 在 Render 真實網路環境下偶爾把 `RtnMsg` 這類中文欄位解碼成 Latin-1 亂碼，導致簽章間歇性失敗（詳見上方「關鍵設計決策」）。兩個都已修正，且第二個 bug 已經用「拿失敗當下的真實欄位、手動校正 `RtnMsg` 重算雜湊、結果跟 ECPay 完全相符」的方式驗證過根因無誤。但**目前所有成功案例都是靠 ECPay 的自動重送機制才過的（第一次通知永遠失敗）**，還沒有觀察過「第一次通知就直接成功」的案例——修正後需要前端重新實測確認第一次就過，不能只看「最終有沒有變成 `paid`」。
 - **`TotalAmount` 的小數捨入**：見上方「關鍵設計決策」，目前用簡單 `round()`，還沒有跟業務確認這個誤差是否可接受。
 - **`ClientBackURL` fallback 落地頁尚未實作**：前端確認主要路徑是 WebView 直接攔截 custom scheme，目前沒有另外做 https 中繼落地頁當保底；如果之後真的遇到某些機型/情境攔截不到，需要再補。
-- **付款失敗（`RtnCode != "1"`）目前只是把 `Order.status` 標成 `"failed"`，沒有把已扣的庫存加回去**——這是延續 `docs/products-and-orders.md` 原本就記錄的「訂單逾時未取消、沒有自動取消機制歸還庫存」的已知限制，這次沒有一併處理。
+- ~~付款失敗不退庫存、待付款訂單沒有自動取消~~：2026-11-12 已處理，見下方「付款失敗與逾時（2026-11-12）」。
 - **測試環境需要後端本身可被外部連到**：`ReturnURL` 是 ECPay 伺服器主動呼叫，本機 uvicorn＋區網 IP 連不到；測試付款要對正式部署（`https://fastapi-pj-2.onrender.com`，已確認有 Render 保活機制、不會休眠）跑，或另外架設 ngrok 之類的通道。
 
 ## 驗證方式

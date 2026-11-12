@@ -65,6 +65,11 @@ def verify_check_mac_value(params: dict, hash_key: str, hash_iv: str) -> bool:
     return computed == received.upper()
 
 
+def expected_trade_amount(order: "Order") -> int:
+    """送給 ECPay 的 TotalAmount（整數元）。callback 比對 TradeAmt 也用這個，兩邊捨入規則一致。"""
+    return round(Decimal(order.total_amount))
+
+
 def build_checkout_params(order: "Order") -> dict:
     """
     組出 AioCheckOut/V5 需要的表單欄位（含 CheckMacValue）。
@@ -77,7 +82,7 @@ def build_checkout_params(order: "Order") -> dict:
     item_name = "#".join(
         f"{item.product.title} x{item.quantity}" for item in order.items
     )
-    total_amount = round(Decimal(order.total_amount))
+    total_amount = expected_trade_amount(order)
 
     params = {
         "MerchantID": settings.ECPAY_MERCHANT_ID,

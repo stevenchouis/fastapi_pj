@@ -23,7 +23,8 @@ from app.schemas.order import (
     OrderOut,
     OrderStatusUpdate,
 )
-from app.services import coupon_service, ecpay_service, loyalty_service
+from app.core.monitoring import capture_exception, capture_message
+from app.services import coupon_service, ecpay_service, loyalty_service, order_service
 from app.services.push_service import send_user_push_notifications
 
 router = APIRouter()
@@ -269,38 +270,17 @@ async def cancel_order(
     點數用 reverse_redeem 交易補回餘額（loyalty_service.reverse_redeem_points）、
     商品庫存加回去，訂單狀態改成 cancelled。
     """
-    query = (
-        select(Order)
-        .where(Order.id == order_id, Order.user_id == current_user.id)
-        .options(ORDER_LOAD_OPTIONS)
-    )
-    result = await db.execute(query)
-    order = result.scalars().first()
-    if order is None:
+    # 2026-11：鎖住訂單列再檢查狀態，避免跟 ECPay callback／逾時取消排程同時處理而退兩次
+    order = await order_service.lock_order(db, order_id)
+    if order is None or order.user_id != current_user.id:
+        await db.rollback()
         raise HTTPException(status_code=404, detail="訂單不存在")
     if order.status != "pending":
+        await db.rollback()
         raise HTTPException(status_code=409, detail="只有待付款的訂單可以取消")
 
     try:
-        for item in order.items:
-            await db.execute(
-                update(ProductModel)
-                .where(ProductModel.id == item.product_id)
-                .values(stock=ProductModel.stock + item.quantity)
-            )
-
-        if order.coupon_id is not None:
-            await coupon_service.release_coupon(db, order.coupon_id)
-
-        if order.points_used > 0:
-            await loyalty_service.reverse_redeem_points(
-                db,
-                current_user.id,
-                order.points_used,
-                reason=f"訂單取消退還：訂單 #{order_id}",
-                related_order_id=order_id,
-            )
-
+        await order_service.release_order_holds(db, order, reason=f"訂單取消退還：訂單 #{order_id}")
         order.status = "cancelled"
         await db.commit()
     except Exception as e:
@@ -396,28 +376,51 @@ async def ecpay_callback(
         return PlainTextResponse("0|CheckMacValueError")
 
     merchant_trade_no = params.get("MerchantTradeNo")
-    query = select(Order).where(Order.merchant_trade_no == merchant_trade_no)
-    result = await db.execute(query)
-    order = result.scalars().first()
-    if order is None:
+
+    # 2026-11：綠界後台「模擬付款」送來的通知（SimulatePaid=1）不是真的收到錢，
+    # 不改狀態、不發點數，只留紀錄
+    if params.get("SimulatePaid") == "1":
+        print(f"WARNING: 收到 ECPay 模擬付款通知（{merchant_trade_no}），不處理")
+        return PlainTextResponse("1|OK")
+
+    order_id = (
+        await db.execute(select(Order.id).where(Order.merchant_trade_no == merchant_trade_no))
+    ).scalar()
+    if order_id is None:
         print(f"DEBUG: ECPay callback 找不到對應訂單: {merchant_trade_no}")
         return PlainTextResponse("0|OrderNotFound")
 
-    if order.status == "paid":
+    # 2026-11：鎖住訂單列再判斷狀態，避免跟使用者取消／逾時取消排程同時處理
+    order = await order_service.lock_order(db, order_id)
+
+    if order.status != "pending":
+        # 已處理過（paid/shipped），或已經取消／失敗（庫存、優惠券、點數都已退回）。
+        # 重送的通知一律回 "1|OK"，不重複處理。取消／失敗後才收到付款成功，代表錢可能
+        # 已經入帳但跟我方狀態對不上：不能再標成 paid（等於券／點數退了又多一筆已付款訂單），
+        # 也不能默默吞掉——印 WARNING 並送 Sentry，留給人工核對是否要退款。
+        status_now = order.status
+        await db.rollback()
+        if params.get("RtnCode") == "1" and status_now in ("cancelled", "failed"):
+            message = (
+                f"ECPay callback 回報付款成功，但訂單 #{order_id}（{merchant_trade_no}）"
+                f"已是 {status_now}，需人工核對是否要退款"
+            )
+            print(f"WARNING: {message}")
+            capture_message(message, level="warning", area="ecpay")
         return PlainTextResponse("1|OK")
 
-    if order.status == "cancelled":
-        # 使用者已經呼叫過 POST /{id}/cancel（優惠券/點數/庫存都已經退還了），但 ECPay
-        # 這通遲到的回調卻說付款成功——代表錢實際上還是有可能已經入帳，只是跟我方的
-        # 取消狀態對不上。不能再把它標成 paid（那樣等於使用者的券/點數退了、卻又生出
-        # 一筆已付款訂單，變相重複拿到折抵），但也不能默默吞掉，印一行醒目的 log 留給
-        # 人工核對是否要跟 ECPay 核對退款，仍回 "1|OK" 讓 ECPay 不要一直重送。
-        if params.get("RtnCode") == "1":
-            print(
-                f"WARNING: ECPay callback 回報付款成功，但訂單 #{order.id}"
-                f"（{merchant_trade_no}）已被使用者取消，需人工核對是否要退款"
+    if params.get("RtnCode") == "1":
+        # 2026-11：金額要跟我方送出的 TotalAmount 一致，不一致不改狀態，回非 1|OK 讓綠界重送、留下痕跡
+        expected = ecpay_service.expected_trade_amount(order)
+        if params.get("TradeAmt") != str(expected):
+            await db.rollback()
+            message = (
+                f"ECPay callback 金額不符：訂單 #{order_id}（{merchant_trade_no}）"
+                f"TradeAmt={params.get('TradeAmt')}，應為 {expected}"
             )
-        return PlainTextResponse("1|OK")
+            print(f"WARNING: {message}")
+            capture_message(message, level="error", area="ecpay")
+            return PlainTextResponse("0|AmountMismatch")
 
     tier_result = None
     order_user_id = order.user_id
@@ -436,12 +439,17 @@ async def ecpay_callback(
                 related_order_id=order.id,
             )
         else:
+            # 2026-11：付款失敗也要把建立訂單時佔用的庫存／優惠券／點數退回（比照取消）
             order.status = "failed"
+            await order_service.release_order_holds(
+                db, order, reason=f"付款失敗退還：訂單 #{order_id}"
+            )
 
         await db.commit()
     except Exception as e:
         await db.rollback()
         print(f"DEBUG: 處理 ECPay callback 失敗: {e}")
+        capture_exception(e, area="ecpay")
         return PlainTextResponse("0|ProcessError")
 
     # 升等推播／推薦獎勵推播（commit 之後才排）

@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.monitoring import capture_exception
 from app.database_async import SchedulerSessionLocal  # 排程一律用 NullPool 工廠，見 database_async 說明
 from app.models import Coupon, LoyaltyTransaction, User  #
-from app.services import loyalty_service, push_cleanup_service
+from app.services import loyalty_service, order_service, push_cleanup_service
 from app.services.push_service import send_user_push_notifications
 
 # 2026-10：先前沒有明確指定 timezone，實際觸發時間取決於執行機器的系統時區
@@ -312,6 +312,30 @@ def run_stale_push_token_cleanup_bridge():
 scheduler = BackgroundScheduler(timezone=SCHEDULER_TIMEZONE)
 
 
+def run_cancel_expired_orders_bridge():
+    """橋接 BackgroundScheduler (同步) 與 order_service.cancel_expired_pending_orders：
+    待付款超過 30 分鐘的網購訂單自動取消並退回庫存／優惠券／點數（2026-11）。"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        stats = loop.run_until_complete(
+            order_service.cancel_expired_pending_orders(SchedulerSessionLocal)
+        )
+        if stats["found"]:
+            print(
+                f"[{datetime.now()}] 逾時未付款訂單：找到 {stats['found']} 筆，取消 {stats['cancelled']} 筆，"
+                f"略過 {stats['skipped']} 筆（狀態已變），失敗 {len(stats['errors'])} 筆"
+            )
+        for order_id, e in stats["errors"]:
+            print(f"[{datetime.now()}] 逾時訂單 #{order_id} 自動取消失敗: {e}")
+            capture_exception(e, job="cancel_expired_orders", order_id=order_id)
+    except Exception as e:
+        print(f"[{datetime.now()}] 逾時未付款訂單排程失敗: {e}")
+        capture_exception(e, job="cancel_expired_orders")
+    finally:
+        loop.close()
+
+
 def _on_job_error(event):
     """排程本身沒接住、往外丟的例外：APScheduler 在自己的執行緒接住後只會寫 log，
     這裡轉送到 Sentry（2026-11 錯誤監控）。"""
@@ -346,11 +370,15 @@ def start_scheduler():
     # 7. 刪除 90 天沒出現的推播 token：每天台灣當地時間凌晨 3 點
     scheduler.add_job(run_stale_push_token_cleanup_bridge, "cron", hour=3, minute=0)
 
+    # 8. 待付款超過 30 分鐘的網購訂單自動取消（2026-11）：每 5 分鐘一次，
+    # 實際取消時間落在建立後 30～35 分鐘之間
+    scheduler.add_job(run_cancel_expired_orders_bridge, "interval", minutes=5)
+
     # 啟動排程器
     scheduler.start()
     print(
         "APScheduler 已啟動（timezone=Asia/Taipei）：正式任務 (每月25日 00:00)、"
         "保活任務 (每14分鐘)、點數到期排程 (每日01:00)、"
         "點數到期提醒排程 (每日10:00)、推播 receipt 檢查 (每15分鐘)、"
-        "過期推播 token 清除 (每日03:00) 運行中..."
+        "過期推播 token 清除 (每日03:00)、逾時未付款訂單取消 (每5分鐘) 運行中..."
     )
